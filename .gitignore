@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# Environment
+.env
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Application-specific
+*.mp3
+*.flac
+*.wav
+*.m4a
+*.ogg
+*.sqlite
+*.sqlite3
+cache/
+logs/
+data/

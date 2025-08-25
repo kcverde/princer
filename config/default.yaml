@@ -1,0 +1,50 @@
+paths:
+  root: "/Volumes/Music/Prince"
+  category_roots:
+    official: "Official"
+    unofficial: "Unofficial"
+    live: "Live"
+    outtakes: "Outtakes"
+  logs: null
+  pv_sqlite: "~/data/princevault/pv.sqlite"
+  pv_xml_dir: "~/data/princevault/xml"
+
+behavior:
+  tag_only: false
+  copy_files: true
+  move_files: false
+  write_tags: true
+  ask_confirmation: true
+  llm_always: true
+  min_auto_score: null
+
+naming:
+  rules_file: "config/naming_rules.md"
+  rules_format: "text"
+  templates_default:
+    live: "{date} - {city} - {venue} - {tracknum} {title} [{source}]{lineage_short}"
+    outtake: "{era}/{session_date} - {title}"
+    official: "{album}/{tracknum} {title}"
+    unofficial: "{setname}/{tracknum} {title}"
+
+fields:
+  keep_custom_tags:
+    - "LINEAGE"
+    - "TAPER"
+    - "TRANSFER"
+  prefer_dates_from:
+    - "PrinceVault"
+    - "MusicBrainz" 
+    - "FileTags"
+
+api:
+  acoustid_key: "env:ACOUSTID_KEY"
+  musicbrainz_user_agent: "PrinceTagger/0.1 (kverde@gmail.com)"
+
+llm:
+  provider: "openai"
+  model: "gpt-4"
+  temperature: 0.2
+  max_tokens: 400
+  approval_required: true
+  system_prompt: "Normalize metadata and destination per provided prefs and naming rules; return strict JSON; never guess beyond given sources."

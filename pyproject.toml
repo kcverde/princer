@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "princer"
+version = "0.1.0"
+description = "Prince song tagger and metadata normalizer"
+authors = [
+    {name = "Kevin Verde", email = "kverde@gmail.com"},
+]
+dependencies = [
+    "typer[all]>=0.9.0",
+    "rich>=13.0.0",
+    "mutagen>=1.47.0",
+    "pyyaml>=6.0",
+    "httpx>=0.24.0",
+    "rapidfuzz>=3.0.0",
+    "python-dateutil>=2.8.0",
+    "pyacoustid>=1.2.0",
+    "musicbrainzngs>=0.7.1",
+    "openai>=1.0.0",
+]
+requires-python = ">=3.11"
+readme = "README.md"
+license = {text = "MIT"}
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+    "mypy>=1.0.0",
+]
+
+[project.scripts]
+tagger = "princer.cli:main"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+
+[tool.ruff]
+target-version = "py311"
+line-length = 88
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = []
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--cov=princer --cov-report=term-missing"
