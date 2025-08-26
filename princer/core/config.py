@@ -76,14 +76,17 @@ class ApiConfig:
 class LlmConfig:
     """LLM configuration."""
     
-    provider: str = "openai"
-    model: str = "gpt-4"
+    provider: str = "openrouter"  # openrouter or openai
+    model: str = "google/gemini-2.5-flash"
     temperature: float = 0.2
-    max_tokens: int = 400
+    max_tokens: int = 800  # Increased for more detailed responses
     approval_required: bool = True
     system_prompt: str = (
-        "Normalize metadata and destination per provided prefs and naming rules; "
-        "return strict JSON; never guess beyond given sources."
+        "You are a Prince music metadata expert. Analyze the provided data sources "
+        "(AcoustID, MusicBrainz, PrinceVault) and return normalized metadata in strict JSON format. "
+        "Prioritize accuracy over guessing. Use Prince-specific knowledge for categories and context. "
+        "Categories: official (commercial releases), live (concerts), outtakes (studio outtakes/demos), "
+        "unofficial (bootleg compilations). Never invent information not supported by the sources."
     )
 
 

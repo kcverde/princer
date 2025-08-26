@@ -42,9 +42,22 @@ api:
   musicbrainz_user_agent: "PrinceTagger/0.1 (kverde@gmail.com)"
 
 llm:
-  provider: "openai"
-  model: "gpt-4"
+  provider: "openrouter"
+  model: "google/gemini-2.5-flash"
   temperature: 0.2
-  max_tokens: 400
+  max_tokens: 800
   approval_required: true
-  system_prompt: "Normalize metadata and destination per provided prefs and naming rules; return strict JSON; never guess beyond given sources."
+  system_prompt: "You are a Prince music metadata expert. Analyze the provided data sources (AcoustID, MusicBrainz, PrinceVault) and return normalized metadata in strict JSON format. 
+
+DATA SOURCE PRIORITY:
+1. MusicBrainz data is the MOST RELIABLE and should be prioritized for core metadata (title, artist, album, date, track numbers)
+2. PrinceVault data is valuable for Prince-specific context BUT can sometimes incorrectly match official songs to bootleg/live versions - use cautiously for categorization
+3. AcoustID provides fingerprint matches but may have inconsistent metadata quality
+
+DECISION RULES:
+- If MusicBrainz shows an official release, trust that over PrinceVault categorization
+- Only use PrinceVault's 'live' or 'bootleg' categorization if MusicBrainz doesn't show official releases
+- For recording dates and venues, prefer PrinceVault only when MusicBrainz lacks this detail
+- Be especially careful when PrinceVault suggests a well-known studio song is 'live' - verify against MusicBrainz releases
+
+Categories: official (commercial releases), live (concerts), outtakes (studio outtakes/demos), unofficial (bootleg compilations). Never invent information not supported by the sources."

@@ -14,6 +14,7 @@ from princer.core.config import ConfigLoader
 from princer.services.acoustid import AcoustIDService
 from princer.services.musicbrainz import MusicBrainzService
 from princer.services.princevault import PrinceVaultService
+from princer.services.llm import LLMService
 
 app = typer.Typer(
     name="tagger",
@@ -504,6 +505,238 @@ def fingerprint(
                 console.print(pv_table)
             else:
                 console.print("[dim]No PrinceVault matches found for filename[/dim]")
+
+
+@app.command()
+def test_llm(
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Configuration file path")
+) -> None:
+    """Test LLM connectivity and basic functionality."""
+    
+    console.print("[dim]Testing LLM connectivity...[/dim]")
+    
+    # Load configuration
+    cfg = ConfigLoader.load(config)
+    
+    # Initialize LLM service
+    llm_service = LLMService(cfg)
+    
+    # Test connection
+    result = llm_service.test_connection()
+    
+    console.print()
+    
+    if result["success"]:
+        console.print("✅ [green]LLM Connection Successful![/green]")
+        
+        # Create results table
+        table = Table(title="LLM Test Results", box=box.ROUNDED)
+        table.add_column("Property", style="cyan")
+        table.add_column("Value", style="white")
+        
+        table.add_row("Provider", cfg.llm.provider)
+        table.add_row("Model", result["model"])
+        table.add_row("Response", result["response"])
+        
+        if result.get("usage"):
+            usage = result["usage"]
+            if usage.get("total_tokens"):
+                table.add_row("Tokens Used", str(usage["total_tokens"]))
+        
+        console.print(table)
+        
+    else:
+        console.print("❌ [red]LLM Connection Failed![/red]")
+        console.print(f"[red]Error:[/red] {result['error']}")
+        
+        console.print()
+        console.print("[yellow]Troubleshooting tips:[/yellow]")
+        console.print("1. Check your API key in .env file")
+        console.print("2. Verify the model name is correct")  
+        console.print("3. Ensure you have API credits/quota")
+        
+        if cfg.llm.provider == "openrouter":
+            console.print("4. Visit https://openrouter.ai/ to check your account")
+        else:
+            console.print("4. Visit https://platform.openai.com/ to check your account")
+        
+        raise typer.Exit(1)
+
+
+@app.command()
+def normalize(
+    file_path: str = typer.Argument(..., help="Audio file to normalize metadata"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Configuration file path"),
+    dry_run: bool = typer.Option(True, "--dry-run", help="Show proposed metadata without applying")
+) -> None:
+    """Test LLM metadata normalization with comprehensive data."""
+    
+    path = Path(file_path)
+    
+    if not path.exists():
+        console.print(f"[red]Error:[/red] File not found: {file_path}")
+        raise typer.Exit(1)
+    
+    if not AudioFile.is_supported(path):
+        console.print(f"[red]Error:[/red] Unsupported file format: {path.suffix}")
+        raise typer.Exit(1)
+    
+    console.print(f"[dim]Normalizing metadata for: {path}[/dim]")
+    
+    # Load configuration
+    cfg = ConfigLoader.load(config)
+    
+    # Initialize services
+    acoustid_service = AcoustIDService(cfg)
+    mb_service = MusicBrainzService(cfg)
+    pv_service = PrinceVaultService(cfg)
+    llm_service = LLMService(cfg)
+    
+    # Get audio file info
+    audio_file = AudioFile(path)
+    info_result = audio_file.extract_info()
+    
+    console.print()
+    console.print("[bold]Step 1: Audio fingerprinting...[/bold]")
+    
+    # Generate fingerprint
+    with console.status("[bold green]Generating fingerprint..."):
+        acoustid_result = acoustid_service.fingerprint_file(path)
+    
+    if acoustid_result.error:
+        console.print(f"[red]Fingerprinting failed:[/red] {acoustid_result.error}")
+        raise typer.Exit(1)
+    
+    console.print(f"Found {len(acoustid_result.acoustid_matches)} AcoustID matches")
+    
+    # Get MusicBrainz data
+    mb_data = None
+    if acoustid_result.acoustid_matches:
+        console.print()
+        console.print("[bold]Step 2: MusicBrainz lookup...[/bold]")
+        
+        best_matches = acoustid_service.get_best_matches(acoustid_result, min_score=0.8)
+        if best_matches and mb_service:
+            recording_ids = []
+            for match in best_matches[:2]:
+                recording_ids.extend(match.recording_ids)
+            
+            if recording_ids:
+                with console.status("[bold green]Querying MusicBrainz..."):
+                    mb_result = mb_service.lookup_recordings(recording_ids[:1])  # Just first one for test
+                
+                if mb_result.recordings:
+                    recording = mb_result.recordings[0]
+                    mb_data = {
+                        'id': recording.id,
+                        'title': recording.title,
+                        'artist_name': recording.artist_name,
+                        'artist_id': recording.artist_id,
+                        'date': recording.date,
+                        'length': recording.length,
+                        'disambiguation': recording.disambiguation,
+                        'releases': recording.releases,
+                        'release_status': recording.release_status
+                    }
+                    console.print(f"Retrieved: {recording.title} by {recording.artist_name}")
+    
+    # Get PrinceVault data
+    pv_data = None
+    console.print()
+    console.print("[bold]Step 3: PrinceVault search...[/bold]")
+    
+    search_terms = set()
+    if acoustid_result.acoustid_matches:
+        for match in acoustid_result.acoustid_matches[:2]:
+            title = match.get('title', '').strip()
+            if title and title.lower() != 'unknown':
+                search_terms.add(title)
+    
+    if not search_terms:
+        search_terms.add(info_result.filename)
+    
+    for search_title in list(search_terms)[:1]:  # Just first one for test
+        with console.status(f"[bold green]Searching PrinceVault for '{search_title}'..."):
+            pv_results = pv_service.search_by_title(search_title, limit=1, min_confidence=0.6)
+        
+        if pv_results:
+            best_pv = pv_results[0]
+            pv_data = {
+                'title': best_pv.song.title,
+                'performer': best_pv.song.performer,
+                'recording_date': best_pv.song.recording_date,
+                'written_by': best_pv.song.written_by,
+                'produced_by': best_pv.song.produced_by,
+                'session_info': best_pv.song.session_info,
+                'album_appearances': best_pv.song.album_appearances,
+                'categories': pv_service.parse_comprehensive_metadata(best_pv.song).get('categories', [])
+            }
+            console.print(f"Found: {best_pv.song.title} (confidence: {best_pv.confidence:.2f})")
+            break
+    
+    # Prepare LLM request
+    console.print()
+    console.print("[bold]Step 4: LLM normalization...[/bold]")
+    
+    from princer.services.llm import MetadataNormalizationRequest
+    
+    llm_request = MetadataNormalizationRequest(
+        filename=path.name,
+        acoustid_data={'matches': acoustid_result.acoustid_matches[:3]},
+        musicbrainz_data=mb_data,
+        princevault_data=pv_data,
+        file_tags=info_result.tags,
+        duration_seconds=info_result.duration_seconds
+    )
+    
+    # Get LLM normalization
+    with console.status("[bold green]Processing with LLM..."):
+        normalized = llm_service.normalize_metadata(llm_request)
+    
+    # Display results
+    console.print()
+    console.print("[bold green]✅ Normalized Metadata:[/bold green]")
+    
+    result_table = Table(title="LLM Normalized Metadata", box=box.ROUNDED)
+    result_table.add_column("Field", style="cyan")
+    result_table.add_column("Value", style="white")
+    
+    result_table.add_row("Title", normalized.title or "Unknown")
+    result_table.add_row("Artist", normalized.artist or "Unknown")
+    if normalized.album:
+        result_table.add_row("Album", normalized.album)
+    if normalized.track_number:
+        result_table.add_row("Track Number", str(normalized.track_number))
+    if normalized.year:
+        result_table.add_row("Year", str(normalized.year))
+    if normalized.date:
+        result_table.add_row("Date", normalized.date)
+    if normalized.category:
+        result_table.add_row("Category", normalized.category)
+    if normalized.recording_date:
+        result_table.add_row("Recording Date", normalized.recording_date)
+    if normalized.venue:
+        result_table.add_row("Venue", normalized.venue)
+    if normalized.session_info:
+        result_table.add_row("Session Info", normalized.session_info)
+    if normalized.genre:
+        result_table.add_row("Genre", normalized.genre)
+    if normalized.comments:
+        result_table.add_row("Comments", normalized.comments)
+    
+    result_table.add_row("Confidence", f"{normalized.confidence:.2f}")
+    
+    console.print(result_table)
+    
+    # Show raw LLM response for debugging
+    if normalized.llm_response:
+        console.print()
+        console.print("[bold]Raw LLM Response:[/bold]")
+        console.print(f"[dim]{normalized.llm_response}[/dim]")
+    
+    if dry_run:
+        console.print()
+        console.print("[yellow]This was a dry run. No metadata was applied to the file.[/yellow]")
 
 
 @app.command()
