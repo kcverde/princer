@@ -1,6 +1,7 @@
 # Prince Song Tagger — Lean PRD (Personal)
 
-*Last updated: 2025‑08‑25*
+*Last updated: 2025‑08‑26*  
+**Current Status: Phase 1 Complete — Basic metadata extraction working**
 
 ---
 
@@ -92,16 +93,19 @@ Simple CLI tool (macOS-first) that fingerprints an audio file, fuses AcoustID/Mu
 
 **Goals**
 
+* **LLM‑first approach**: Let AI handle complex pattern recognition instead of brittle regex/rules.
 * **Simplicity‑first**: minimal surface area; do the few important things well.
 * Identify each track with high confidence using fingerprint + metadata fusion.
 * Normalize tags and filenames to a consistent personal spec (bootlegs/live‑friendly).
 * Fast confirm/apply loop (Enter=apply, e=edit, s=skip); **always user‑approved**.
-* **LLM always runs** to harmonize data and reduce rule complexity.
 * **Non‑destructive** by default: copy to destination; originals remain.
+* **Incremental development**: working functionality at each phase.
 
 **Non‑Goals**
 
-* Bulk “entire library re‑org”.
+* Complex filename parsing logic (let the LLM handle this).
+* Hand‑coded fuzzy matching algorithms (let the LLM handle this).
+* Bulk "entire library re‑org" without user approval.
 * Persistent manifests/undo systems or complex logging.
 * Cloud upload of audio or web scraping beyond AcoustID/MusicBrainz APIs.
 
@@ -180,18 +184,20 @@ Simple CLI tool (macOS-first) that fingerprints an audio file, fuses AcoustID/Mu
 
 ---
 
-## 9) Resolution Pipeline (LLM always, simplicity‑first)
+## 9) Resolution Pipeline (LLM‑first, simplified)
 
-1. **Extract**: duration, bitrate, existing tags, filename tokens.
-2. **Fingerprint**: Chromaprint → AcoustID → candidate MBIDs (+ scores).
-3. **MusicBrainz**: fetch candidate recordings/releases via `musicbrainzngs`.
-4. **PrinceVault join**: SQLite queries; fuzzy by date ±2d, venue/city/title aliases; duration ±3s.
-5. **Fuse & order**: compute a confidence score (ordering only; **no auto‑apply**).
-6. **LLM normalize (always)**: compact JSON + **naming rules text** → pick best alignment (PV vs MB), normalize titles, choose destination & filename, fill key tags.
-7. **Propose**: show best proposal + up to 2 alternates **and a minimal diff table** (current vs proposed tags).
-8. **Pre‑apply safety**: compute **audio hash** (stream-only); if a duplicate already exists at the destination (same hash), alert and skip or offer **keep both** with suffix.
-9. **Apply**: on approval, either **Tag‑only** (in place) or **Copy+Place** (copy then tag). Originals remain.
-10. **Failure**: if nothing plausible, do nothing and label **Unresolved** (optionally send to `--quarantine PATH`).
+1. **Extract**: File metadata (duration, bitrate, existing tags), raw filename (no parsing).
+2. **Fingerprint**: Chromaprint → AcoustID → candidate MBIDs + confidence scores.
+3. **MusicBrainz**: Fetch candidate recordings/releases for each MBID.
+4. **PrinceVault join**: SQLite queries against local database copy.
+5. **LLM normalize (always)**: Send **all raw data** + **naming rules text** → LLM decides best match, normalizes metadata, suggests tags + destination path.
+6. **Propose**: Display LLM's primary recommendation + alternates in clean diff format.
+7. **User approval**: Interactive review with options to approve, edit, choose alternates, or skip.
+8. **Pre‑apply safety**: Audio hash check for duplicates at destination.
+9. **Apply**: Tag‑only (modify in place) or Copy+Place (copy to destination then tag).
+10. **Unresolved**: Files with no confident match go to quarantine folder (optional).
+
+**Key simplification**: No complex filename parsing logic, no hand‑coded fuzzy matching. The LLM handles all pattern recognition, normalization, and decision‑making using the human‑readable naming rules.
 
 ---
 
@@ -252,22 +258,45 @@ llm:
 
 ## 12) LLM Contract (JSON in/out)
 
-**Input (compact)**
+**Input (all raw data, no pre-processing)**
 
 ```json
 {
   "context": {
-    "file": {"duration_sec": 296, "ext": "flac"},
-    "tags": {"TITLE": "Purple Rain", "DATE": "1984"},
-    "filename_tokens": ["1984-08-03","First Avenue","SBD"],
-    "acoustid": {"id": "acX", "score": 0.92, "mb_recording_ids": ["mbR1","mbR2"]},
-    "musicbrainz": {"recordings": [{"id": "mbR1","title": "Purple Rain","disambig": "First Avenue, 3 Aug 1983"}]},
-    "princevault": {"concert_candidates": [{"pv_id": 1234, "date": "1983-08-03", "venue": "First Avenue", "city": "Minneapolis"}]},
-    "prefs": {"category": "live"},
-    "naming_rules_text": "(contents of prefs/naming.md)"
+    "file": {
+      "path": "testfiles/1984-08-03 First Avenue Purple Rain [SBD].flac",
+      "filename": "1984-08-03 First Avenue Purple Rain [SBD]",
+      "extension": ".flac",
+      "duration_sec": 296,
+      "bitrate": 1411,
+      "sample_rate": 44100
+    },
+    "existing_tags": {
+      "TITLE": "Purple Rain", 
+      "ARTIST": "Prince",
+      "DATE": "1984"
+    },
+    "acoustid": {
+      "fingerprint_id": "acX", 
+      "score": 0.92, 
+      "mb_recording_ids": ["mbR1", "mbR2"]
+    },
+    "musicbrainz_data": {
+      "recordings": [
+        {"id": "mbR1", "title": "Purple Rain", "disambiguation": "live, 1983-08-03, First Avenue"}
+      ]
+    },
+    "princevault_data": {
+      "concerts": [
+        {"pv_id": 1234, "date": "1983-08-03", "venue": "First Avenue", "city": "Minneapolis", "setlist": ["Purple Rain"]}
+      ]
+    },
+    "naming_rules": "(full contents of config/naming_rules.md)"
   }
 }
 ```
+
+**Key change**: Raw filename and all data sources provided as-is. No tokenization, no pre-parsing. Let the LLM figure out patterns.
 
 **Output (proposed decision)**
 

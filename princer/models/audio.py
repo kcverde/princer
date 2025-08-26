@@ -46,27 +46,6 @@ class AudioFile:
     
     SUPPORTED_EXTENSIONS = {'.mp3', '.flac', '.m4a', '.wav', '.ogg'}
     
-    # Common patterns for Prince bootleg filenames
-    DATE_PATTERNS = [
-        r'(\d{4}-\d{2}-\d{2})',  # YYYY-MM-DD
-        r'(\d{4}\.\d{2}\.\d{2})',  # YYYY.MM.DD
-        r'(\d{2}-\d{2}-\d{4})',  # MM-DD-YYYY
-        r'(\d{8})',  # YYYYMMDD
-    ]
-    
-    SOURCE_TYPES = {
-        'sbd', 'soundboard', 'board', 'matrix', 'aud', 'audience', 
-        'fm', 'radio', 'tv', 'television', 'pro', 'professional',
-        'vinyl', 'cd', 'dat', 'cassette', 'reel'
-    }
-    
-    GENERATION_PATTERNS = [
-        r'\b(gen\s*\d+)\b',
-        r'\b(generation\s*\d+)\b', 
-        r'\b(g\d+)\b',
-        r'\b(\d+gen)\b'
-    ]
-    
     def __init__(self, file_path: str | Path):
         """Initialize with audio file path."""
         self.path = Path(file_path)
@@ -105,8 +84,8 @@ class AudioFile:
             # Extract tags
             info.tags = self._extract_tags()
             
-            # Parse filename
-            info.filename_parse = self._parse_filename()
+            # Store raw filename for LLM processing later
+            info.filename_parse = FilenameParse()
             
         except Exception as e:
             info.error = f"Error reading file: {str(e)}"
@@ -159,53 +138,6 @@ class AudioFile:
         
         return tags
     
-    def _parse_filename(self) -> FilenameParse:
-        """Parse filename for date, venue, source type, etc."""
-        filename = self.path.stem
-        parse = FilenameParse()
-        
-        # Extract date
-        for pattern in self.DATE_PATTERNS:
-            match = re.search(pattern, filename, re.IGNORECASE)
-            if match:
-                parse.date = match.group(1)
-                break
-                
-        # Extract source type
-        words = re.findall(r'\b\w+\b', filename.lower())
-        for word in words:
-            if word in self.SOURCE_TYPES:
-                parse.source_type = word.upper()
-                break
-                
-        # Look for source type in brackets/parens
-        bracket_match = re.search(r'[\[\(]([^[\]()]+)[\]\)]', filename)
-        if bracket_match and not parse.source_type:
-            content = bracket_match.group(1).lower()
-            for source in self.SOURCE_TYPES:
-                if source in content:
-                    parse.source_type = source.upper()
-                    break
-                    
-        # Extract generation info
-        for pattern in self.GENERATION_PATTERNS:
-            match = re.search(pattern, filename, re.IGNORECASE)
-            if match:
-                parse.generation = match.group(1)
-                break
-                
-        # Try to extract venue/city (this is heuristic)
-        # Look for patterns like "City - Venue" or "Venue, City"
-        parts = re.split(r'[-–—]', filename)
-        if len(parts) >= 3:
-            # Assume format like "Date - City - Venue - Title"
-            if len(parts) >= 4:
-                parse.city = parts[1].strip()
-                parse.venue = parts[2].strip()
-            elif len(parts) == 3:
-                parse.venue = parts[1].strip()
-                
-        return parse
         
     @classmethod
     def is_supported(cls, file_path: str | Path) -> bool:

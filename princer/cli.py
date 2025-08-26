@@ -50,7 +50,9 @@ def display_audio_info(info: AudioFileInfo) -> None:
         table.add_row("Duration", duration_str)
     
     if info.bitrate:
-        table.add_row("Bitrate", f"{info.bitrate} kbps")
+        # Convert from bps to kbps
+        bitrate_kbps = info.bitrate // 1000 if info.bitrate >= 1000 else info.bitrate
+        table.add_row("Bitrate", f"{bitrate_kbps} kbps")
     
     if info.sample_rate:
         table.add_row("Sample Rate", f"{info.sample_rate} Hz")
@@ -76,32 +78,8 @@ def display_audio_info(info: AudioFileInfo) -> None:
             
         console.print(tags_table)
     
-    # Filename parsing results
-    if info.filename_parse:
-        parse = info.filename_parse
-        parse_table = Table(title="Filename Parsing", box=box.ROUNDED)
-        parse_table.add_column("Component", style="green", width=20)
-        parse_table.add_column("Value", style="white")
-        
-        if parse.date:
-            parse_table.add_row("Date", parse.date)
-        if parse.city:
-            parse_table.add_row("City", parse.city)
-        if parse.venue:
-            parse_table.add_row("Venue", parse.venue)
-        if parse.source_type:
-            parse_table.add_row("Source Type", parse.source_type)
-        if parse.generation:
-            parse_table.add_row("Generation", parse.generation)
-        if parse.title:
-            parse_table.add_row("Title", parse.title)
-        if parse.track_number:
-            parse_table.add_row("Track Number", parse.track_number)
-            
-        if parse_table.rows:
-            console.print(parse_table)
-        else:
-            console.print("[dim]No filename patterns detected[/dim]")
+    # Show raw filename for reference (LLM will parse this later)
+    console.print(f"[dim]Raw filename: {info.filename}{info.extension}[/dim]")
 
 
 @app.command()

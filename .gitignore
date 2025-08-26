@@ -25,6 +25,7 @@ venv/
 *.m4a
 *.ogg
 *.sqlite
+*.db
 *.sqlite3
 cache/
 logs/
