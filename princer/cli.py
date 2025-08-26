@@ -206,15 +206,16 @@ def fingerprint(
                         mb_result = mb_service.lookup_recordings(recording_ids)
                     
                     if mb_result.recordings:
-                        console.print()
-                        mb_table = Table(title="MusicBrainz Details", box=box.ROUNDED)
-                        mb_table.add_column("Title", style="white")
-                        mb_table.add_column("Artist", style="blue")
-                        mb_table.add_column("Date", style="yellow")
-                        mb_table.add_column("Duration", style="green")
-                        mb_table.add_column("Notes", style="dim")
-                        
-                        for recording in mb_result.recordings:
+                        for i, recording in enumerate(mb_result.recordings, 1):
+                            console.print()
+                            console.print(f"[bold cyan]Match {i}: {recording.title} by {recording.artist_name}[/bold cyan]")
+                            
+                            # Basic info table
+                            basic_table = Table(box=box.ROUNDED)
+                            basic_table.add_column("Property", style="cyan")
+                            basic_table.add_column("Value", style="white")
+                            
+                            # Duration
                             duration = "Unknown"
                             if recording.length:
                                 try:
@@ -226,15 +227,78 @@ def fingerprint(
                                 except (ValueError, TypeError):
                                     duration = "Unknown"
                             
-                            mb_table.add_row(
-                                recording.title,
-                                recording.artist_name,
-                                recording.date or "Unknown",
-                                duration,
-                                recording.disambiguation or ""
-                            )
-                        
-                        console.print(mb_table)
+                            basic_table.add_row("Date", recording.date or "Unknown")
+                            basic_table.add_row("Duration", duration)
+                            if recording.disambiguation:
+                                basic_table.add_row("Notes", recording.disambiguation)
+                            if recording.release_status:
+                                basic_table.add_row("Status", recording.release_status)
+                            
+                            console.print(basic_table)
+                            
+                            # Recording venue/place
+                            if recording.recording_place:
+                                place = recording.recording_place
+                                venue_info = place.name
+                                if place.area:
+                                    venue_info += f", {place.area}"
+                                if place.type:
+                                    venue_info += f" ({place.type})"
+                                    
+                                venue_table = Table(title="Recording Location", box=box.ROUNDED)
+                                venue_table.add_column("Venue", style="green")
+                                venue_table.add_row(venue_info)
+                                console.print(venue_table)
+                            
+                            # Works (compositions)
+                            if recording.works:
+                                works_table = Table(title="Original Compositions", box=box.ROUNDED)
+                                works_table.add_column("Work", style="magenta")
+                                works_table.add_column("Type", style="dim")
+                                
+                                for work in recording.works[:3]:  # Limit display
+                                    works_table.add_row(
+                                        work.title,
+                                        work.type or "Song"
+                                    )
+                                console.print(works_table)
+                            
+                            # Tags
+                            if recording.tags:
+                                popular_tags = []
+                                for tag in recording.tags:
+                                    count = tag.get('count', 0)
+                                    # Convert count to int if it's a string
+                                    try:
+                                        count_int = int(count) if isinstance(count, str) else count
+                                        if count_int > 1:
+                                            popular_tags.append(tag)
+                                    except ValueError:
+                                        continue
+                                popular_tags = popular_tags[:5]
+                                if popular_tags:
+                                    tags_text = ", ".join([tag['name'] for tag in popular_tags])
+                                    console.print(f"[dim]Tags: {tags_text}[/dim]")
+                            
+                            # URLs
+                            if recording.urls:
+                                url_types = {}
+                                for url in recording.urls:
+                                    url_type = url.get('type', 'link')
+                                    if url_type not in url_types:
+                                        url_types[url_type] = url.get('url', '')
+                                
+                                if url_types:
+                                    console.print("[dim]External links: " + 
+                                                ", ".join([f"{k}" for k in url_types.keys()]) + "[/dim]")
+                            
+                            # Related recordings
+                            if recording.related_recordings:
+                                console.print(f"[dim]Related recordings: {len(recording.related_recordings)} other versions[/dim]")
+                            
+                            # ISRCs
+                            if recording.isrcs:
+                                console.print(f"[dim]ISRCs: {', '.join(recording.isrcs[:2])}[/dim]")
                     
                     if mb_result.error:
                         console.print(f"[yellow]Warning:[/yellow] MusicBrainz errors: {mb_result.error}")
