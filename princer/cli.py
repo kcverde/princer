@@ -10,6 +10,9 @@ from rich.text import Text
 from rich import box
 
 from princer.models.audio import AudioFile, AudioFileInfo
+from princer.core.config import ConfigLoader
+from princer.services.acoustid import AcoustIDService
+from princer.services.musicbrainz import MusicBrainzService
 
 app = typer.Typer(
     name="tagger",
@@ -110,6 +113,137 @@ def info(
 
 
 @app.command()
+def fingerprint(
+    file_path: str = typer.Argument(..., help="Audio file to fingerprint"),
+    config: Optional[str] = typer.Option(None, "--config", "-c", help="Configuration file path"),
+    lookup_mb: bool = typer.Option(True, "--lookup-mb", help="Look up matches in MusicBrainz")
+) -> None:
+    """Generate audio fingerprint and find matches via AcoustID + MusicBrainz."""
+    
+    path = Path(file_path)
+    
+    if not path.exists():
+        console.print(f"[red]Error:[/red] File not found: {file_path}")
+        raise typer.Exit(1)
+    
+    if not AudioFile.is_supported(path):
+        console.print(f"[red]Error:[/red] Unsupported file format: {path.suffix}")
+        raise typer.Exit(1)
+    
+    console.print(f"[dim]Fingerprinting file: {path}[/dim]")
+    
+    # Load configuration
+    cfg = ConfigLoader.load(config)
+    
+    # Check for API key
+    if not cfg.api.acoustid_key:
+        console.print("[red]Error:[/red] No AcoustID API key found.")
+        console.print("Set your API key in the ACOUSTID_KEY environment variable.")
+        console.print("Get a free key at: https://acoustid.org/api-key")
+        raise typer.Exit(1)
+    
+    # Initialize services
+    acoustid_service = AcoustIDService(cfg)
+    mb_service = MusicBrainzService(cfg) if lookup_mb else None
+    
+    # Generate fingerprint and get AcoustID matches
+    with console.status("[bold green]Generating fingerprint..."):
+        result = acoustid_service.fingerprint_file(path)
+    
+    if result.error:
+        console.print(f"[red]Error:[/red] {result.error}")
+        raise typer.Exit(1)
+    
+    # Display fingerprint info
+    console.print()
+    fp_table = Table(title="Audio Fingerprint", box=box.ROUNDED)
+    fp_table.add_column("Property", style="cyan")
+    fp_table.add_column("Value", style="white")
+    
+    fp_table.add_row("Duration", f"{result.duration:.1f} seconds")
+    fp_table.add_row("Fingerprint ID", result.fingerprint[:16] + "...")
+    fp_table.add_row("AcoustID Matches", str(len(result.acoustid_matches)))
+    
+    console.print(fp_table)
+    
+    # Display AcoustID matches
+    if result.acoustid_matches:
+        console.print()
+        matches_table = Table(title="AcoustID Matches", box=box.ROUNDED)
+        matches_table.add_column("Score", style="yellow")
+        matches_table.add_column("Recording ID", style="green") 
+        matches_table.add_column("Title", style="white")
+        matches_table.add_column("Artist", style="blue")
+        
+        for match in result.acoustid_matches[:5]:  # Show top 5
+            score = match.get('score', 0)
+            recording_id = match.get('recording_id', 'N/A')
+            title = match.get('title', 'Unknown')
+            artist = match.get('artist', 'Unknown')
+            
+            matches_table.add_row(
+                f"{score:.3f}",
+                recording_id[:8] + "..." if len(recording_id) > 8 else recording_id,
+                title,
+                artist
+            )
+        
+        console.print(matches_table)
+        
+        # Look up detailed MusicBrainz info for best matches
+        if lookup_mb and mb_service:
+            best_matches = acoustid_service.get_best_matches(result, min_score=0.8)
+            if best_matches:
+                console.print()
+                console.print("[bold]Looking up MusicBrainz details for best matches...[/bold]")
+                
+                recording_ids = []
+                for match in best_matches[:3]:  # Top 3 matches only
+                    recording_ids.extend(match.recording_ids)
+                
+                if recording_ids:
+                    with console.status("[bold green]Querying MusicBrainz..."):
+                        mb_result = mb_service.lookup_recordings(recording_ids)
+                    
+                    if mb_result.recordings:
+                        console.print()
+                        mb_table = Table(title="MusicBrainz Details", box=box.ROUNDED)
+                        mb_table.add_column("Title", style="white")
+                        mb_table.add_column("Artist", style="blue")
+                        mb_table.add_column("Date", style="yellow")
+                        mb_table.add_column("Duration", style="green")
+                        mb_table.add_column("Notes", style="dim")
+                        
+                        for recording in mb_result.recordings:
+                            duration = "Unknown"
+                            if recording.length:
+                                try:
+                                    length_ms = int(recording.length)
+                                    duration_sec = length_ms // 1000
+                                    minutes = duration_sec // 60
+                                    seconds = duration_sec % 60
+                                    duration = f"{minutes}:{seconds:02d}"
+                                except (ValueError, TypeError):
+                                    duration = "Unknown"
+                            
+                            mb_table.add_row(
+                                recording.title,
+                                recording.artist_name,
+                                recording.date or "Unknown",
+                                duration,
+                                recording.disambiguation or ""
+                            )
+                        
+                        console.print(mb_table)
+                    
+                    if mb_result.error:
+                        console.print(f"[yellow]Warning:[/yellow] MusicBrainz errors: {mb_result.error}")
+    
+    else:
+        console.print("\n[yellow]No AcoustID matches found for this file.[/yellow]")
+
+
+@app.command()
 def tag(
     file_path: str = typer.Argument(..., help="Audio file to tag"),
     tag_only: bool = typer.Option(True, "--tag-only", help="Write tags in place (default)"),
@@ -119,7 +253,7 @@ def tag(
 ) -> None:
     """Tag an audio file with normalized metadata."""
     
-    console.print("[yellow]Tagging functionality coming in Phase 2![/yellow]")
+    console.print("[yellow]Tagging functionality coming in Phase 4![/yellow]")
     console.print(f"Would process: {file_path}")
     console.print(f"Mode: {'Tag-only' if tag_only else 'Copy+Place'}")
     if dry_run:

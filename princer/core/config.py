@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Union
 from dataclasses import dataclass, field
 
 import yaml
+from dotenv import load_dotenv
 
 
 @dataclass
@@ -165,6 +166,9 @@ class ConfigLoader:
     def load(cls, config_path: Optional[Union[str, Path]] = None) -> Config:
         """Load configuration from file or defaults."""
         
+        # Load .env file first (look in current directory)
+        cls._load_env_file()
+        
         if config_path:
             return cls._load_from_path(Path(config_path))
             
@@ -178,6 +182,22 @@ class ConfigLoader:
         config = Config()
         config.resolve_env_vars()
         return config
+    
+    @classmethod
+    def _load_env_file(cls) -> None:
+        """Load environment variables from .env file."""
+        
+        # Look for .env file in current directory and parent directories
+        env_paths = [
+            Path(".env"),
+            Path("../.env"),
+            Path.home() / ".princer" / ".env"
+        ]
+        
+        for env_path in env_paths:
+            if env_path.exists():
+                load_dotenv(env_path)
+                break
     
     @classmethod
     def _load_from_path(cls, config_path: Path) -> Config:
