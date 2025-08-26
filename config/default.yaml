@@ -61,3 +61,36 @@ DECISION RULES:
 - Be especially careful when PrinceVault suggests a well-known studio song is 'live' - verify against MusicBrainz releases
 
 Categories: official (commercial releases), live (concerts), outtakes (studio outtakes/demos), unofficial (bootleg compilations). Never invent information not supported by the sources."
+  
+  user_prompt_template: |
+    Normalize metadata for audio file: {filename}
+    Duration: {duration} seconds
+    Format: {format}
+    Bitrate: {bitrate}
+    
+    CURRENT FILE TAGS:
+    {current_tags}
+    
+    AVAILABLE DATA SOURCES:
+    {acoustid_data}
+    {musicbrainz_data}
+    {princevault_data}
+    
+    Please return normalized metadata in JSON format with these fields:
+    {{
+      "title": "song title",
+      "artist": "artist name", 
+      "album": "album name or null",
+      "track_number": number or null,
+      "year": 4-digit year or null,
+      "date": "YYYY-MM-DD or YYYY or null",
+      "category": "official/live/outtakes/unofficial",
+      "recording_date": "YYYY-MM-DD or descriptive date",
+      "venue": "recording location or null",
+      "session_info": "session details or null",
+      "genre": "music genre or null",
+      "comments": "additional context or null",
+      "confidence": 0.0-1.0 score
+    }}
+    
+    Return ONLY valid JSON, no other text.

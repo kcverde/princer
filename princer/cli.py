@@ -749,10 +749,9 @@ def normalize(
             console.print("No PrinceVault matches found")
         console.print()
         
-        # LLM prompt section
-        console.print("[bold cyan]🤖 LLM PROMPT[/bold cyan]")
-        console.print("[dim]System prompt:[/dim]")
-        console.print(llm_service.config.llm.system_prompt)
+        # LLM prompt section - will show complete prompts after request is built
+        console.print("[bold cyan]🤖 LLM PROMPT PREVIEW[/bold cyan]")
+        console.print("[dim]Complete prompts will be shown below after request is built...[/dim]")
         console.print("─" * 80)
         console.print()
     
@@ -806,14 +805,35 @@ def normalize(
             if key not in pv_data and value:
                 pv_data[key] = value
     
+    # Format file info for LLM
+    file_info = metadata['file_info']
+    format_str = file_info['format'] if file_info['format'] != 'Unknown' else "Unknown"
+    bitrate_str = f"{file_info['bitrate'] // 1000} kbps" if file_info['bitrate'] else "Unknown"
+    
     llm_request = MetadataNormalizationRequest(
-        filename=metadata['file_info']['filename'],
+        filename=file_info['filename'],
         acoustid_data={'matches': metadata['acoustid']['matches'][:3]},
         musicbrainz_data=mb_data,
         princevault_data=pv_data,
-        file_tags=metadata['file_info']['tags'],
-        duration_seconds=metadata['file_info']['duration_seconds']
+        file_tags=file_info['tags'],
+        duration_seconds=file_info['duration_seconds'],
+        format_info=format_str,
+        bitrate=bitrate_str
     )
+    
+    # Show complete LLM prompts if in debug mode
+    if debug:
+        console.print()
+        console.print("[bold yellow]🤖 COMPLETE LLM PROMPTS[/bold yellow]")
+        console.print("=" * 80)
+        console.print("[bold]SYSTEM PROMPT:[/bold]")
+        console.print(llm_service.config.llm.system_prompt)
+        console.print()
+        console.print("[bold]USER PROMPT:[/bold]")
+        user_prompt = llm_service._build_normalization_prompt(llm_request)
+        console.print(user_prompt)
+        console.print("=" * 80)
+        console.print()
     
     # Get LLM normalization
     console.print()

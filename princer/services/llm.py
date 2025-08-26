@@ -22,6 +22,8 @@ class MetadataNormalizationRequest:
     # Additional context
     file_tags: Optional[Dict[str, Any]] = None
     duration_seconds: Optional[float] = None
+    format_info: Optional[str] = None
+    bitrate: Optional[str] = None
 
 
 @dataclass  
@@ -223,112 +225,109 @@ class LLMService:
             )
     
     def _build_normalization_prompt(self, request: MetadataNormalizationRequest) -> str:
-        """Build comprehensive prompt for metadata normalization."""
+        """Build comprehensive prompt for metadata normalization using template."""
         
-        prompt_parts = [
-            f"Normalize metadata for audio file: {request.filename}",
-            f"Duration: {request.duration_seconds:.1f} seconds" if request.duration_seconds else "",
-            "",
-            "Available data sources:"
-        ]
+        # Format file info
+        duration = f"{request.duration_seconds:.1f}" if request.duration_seconds else "Unknown"
+        format_info = request.format_info or "Unknown"
+        bitrate = request.bitrate or "Unknown"
         
-        # Add AcoustID data
+        # Format current tags
+        if request.file_tags:
+            current_tags = []
+            for key, value in request.file_tags.items():
+                current_tags.append(f"  {key.title()}: {value}")
+            current_tags_str = "\n".join(current_tags)
+        else:
+            current_tags_str = "  No tags found"
+        
+        # Format AcoustID data
+        acoustid_str = ""
         if request.acoustid_data:
-            prompt_parts.append("AcoustID matches:")
+            acoustid_lines = ["AcoustID matches:"]
             for i, match in enumerate(request.acoustid_data.get('matches', [])[:3], 1):
-                prompt_parts.append(f"  {i}. Title: {match.get('title', 'Unknown')} | Artist: {match.get('artist', 'Unknown')} | Score: {match.get('score', 0):.3f}")
+                acoustid_lines.append(f"  {i}. Title: {match.get('title', 'Unknown')} | Artist: {match.get('artist', 'Unknown')} | Score: {match.get('score', 0):.3f}")
+            acoustid_str = "\n".join(acoustid_lines)
+        else:
+            acoustid_str = "No AcoustID matches"
         
-        # Add MusicBrainz data
+        # Format MusicBrainz data
+        musicbrainz_str = ""
         if request.musicbrainz_data:
-            prompt_parts.extend([
-                "",
+            mb_lines = [
                 "MusicBrainz details:",
                 f"  Recording ID: {request.musicbrainz_data.get('id', 'N/A')}",
                 f"  Title: {request.musicbrainz_data.get('title', 'Unknown')}",
                 f"  Artist: {request.musicbrainz_data.get('artist_name', 'Unknown')}",
                 f"  Date: {request.musicbrainz_data.get('date', 'Unknown')}",
                 f"  Duration: {request.musicbrainz_data.get('length', 'Unknown')}",
-            ])
+            ]
             
             if request.musicbrainz_data.get('disambiguation'):
-                prompt_parts.append(f"  Context: {request.musicbrainz_data['disambiguation']}")
+                mb_lines.append(f"  Context: {request.musicbrainz_data['disambiguation']}")
             
             if request.musicbrainz_data.get('releases'):
-                prompt_parts.append("  Releases:")
+                mb_lines.append("  Releases:")
                 for release in request.musicbrainz_data['releases'][:2]:
-                    prompt_parts.append(f"    - {release.get('title', 'Unknown')} ({release.get('date', 'Unknown')})")
+                    mb_lines.append(f"    - {release.get('title', 'Unknown')} ({release.get('date', 'Unknown')})")
+            
+            musicbrainz_str = "\n".join(mb_lines)
+        else:
+            musicbrainz_str = "No MusicBrainz data"
         
-        # Add PrinceVault data
+        # Format PrinceVault data
+        princevault_str = ""
         if request.princevault_data:
-            prompt_parts.extend([
-                "",
+            pv_lines = [
                 "PrinceVault details:",
                 f"  Title: {request.princevault_data.get('title', 'Unknown')}",
                 f"  Recording Date: {request.princevault_data.get('recording_date', 'Unknown')}",
                 f"  Performer: {request.princevault_data.get('performer', 'Unknown')}",
                 f"  Confidence: {request.princevault_data.get('confidence', 0):.2f}",
-            ])
+            ]
             
             if request.princevault_data.get('session_info'):
-                prompt_parts.append(f"  Session: {request.princevault_data['session_info']}")
+                pv_lines.append(f"  Session: {request.princevault_data['session_info']}")
             
             if request.princevault_data.get('written_by'):
-                prompt_parts.append(f"  Written By: {request.princevault_data['written_by']}")
+                pv_lines.append(f"  Written By: {request.princevault_data['written_by']}")
                 
             if request.princevault_data.get('produced_by'):
-                prompt_parts.append(f"  Produced By: {request.princevault_data['produced_by']}")
+                pv_lines.append(f"  Produced By: {request.princevault_data['produced_by']}")
             
             if request.princevault_data.get('personnel'):
                 personnel = request.princevault_data['personnel']
                 if isinstance(personnel, list):
-                    prompt_parts.append(f"  Personnel: {'; '.join(personnel[:3])}")
+                    pv_lines.append(f"  Personnel: {'; '.join(personnel[:3])}")
                 else:
-                    prompt_parts.append(f"  Personnel: {personnel}")
+                    pv_lines.append(f"  Personnel: {personnel}")
             
             if request.princevault_data.get('album_appearances'):
-                prompt_parts.append(f"  Albums: {'; '.join(request.princevault_data['album_appearances'][:2])}")
+                pv_lines.append(f"  Albums: {'; '.join(request.princevault_data['album_appearances'][:2])}")
                 
             if request.princevault_data.get('related_versions'):
-                prompt_parts.append(f"  Related Versions: {'; '.join(request.princevault_data['related_versions'][:2])}")
+                pv_lines.append(f"  Related Versions: {'; '.join(request.princevault_data['related_versions'][:2])}")
                 
             if request.princevault_data.get('categories'):
-                prompt_parts.append(f"  Categories: {', '.join(request.princevault_data['categories'][:5])}")
+                pv_lines.append(f"  Categories: {', '.join(request.princevault_data['categories'][:5])}")
                 
             # Include raw content snippet if available for additional context
             if request.princevault_data.get('raw_content'):
                 content = request.princevault_data['raw_content'][:200] + "..." if len(request.princevault_data['raw_content']) > 200 else request.princevault_data['raw_content']
-                prompt_parts.append(f"  Raw Content Snippet: {content}")
+                pv_lines.append(f"  Raw Content Snippet: {content}")
+            
+            princevault_str = "\n".join(pv_lines)
+        else:
+            princevault_str = "No PrinceVault data"
         
-        # Add file tags if available
-        if request.file_tags:
-            prompt_parts.extend([
-                "",
-                "Current file tags:",
-                f"  Title: {request.file_tags.get('title', 'None')}",
-                f"  Artist: {request.file_tags.get('artist', 'None')}",
-                f"  Album: {request.file_tags.get('album', 'None')}",
-            ])
-        
-        prompt_parts.extend([
-            "",
-            "Please return normalized metadata in JSON format with these fields:",
-            "{",
-            '  "title": "song title",',
-            '  "artist": "artist name", ',
-            '  "album": "album name or null",',
-            '  "track_number": number or null,',
-            '  "year": 4-digit year or null,',
-            '  "date": "YYYY-MM-DD or YYYY or null",',
-            '  "category": "official|live|outtakes|unofficial or null",', 
-            '  "recording_date": "recording date or null",',
-            '  "venue": "venue/studio name or null",',
-            '  "session_info": "session details or null",',
-            '  "genre": "genre or null",',
-            '  "comments": "additional context or null",',
-            '  "confidence": 0.0-1.0 confidence score',
-            "}",
-            "",
-            "Prioritize MusicBrainz and PrinceVault data over filename parsing."
-        ])
-        
-        return "\n".join(prompt_parts)
+        # Use the template from config
+        return self.config.llm.user_prompt_template.format(
+            filename=request.filename,
+            duration=duration,
+            format=format_info,
+            bitrate=bitrate,
+            current_tags=current_tags_str,
+            acoustid_data=acoustid_str,
+            musicbrainz_data=musicbrainz_str,
+            princevault_data=princevault_str
+        )

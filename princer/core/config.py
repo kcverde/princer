@@ -88,6 +88,31 @@ class LlmConfig:
         "Categories: official (commercial releases), live (concerts), outtakes (studio outtakes/demos), "
         "unofficial (bootleg compilations). Never invent information not supported by the sources."
     )
+    user_prompt_template: str = (
+        "Normalize metadata for audio file: {filename}\n"
+        "Duration: {duration} seconds\n"
+        "Format: {format}\n"
+        "Bitrate: {bitrate}\n\n"
+        "CURRENT FILE TAGS:\n{current_tags}\n\n"
+        "AVAILABLE DATA SOURCES:\n{acoustid_data}\n{musicbrainz_data}\n{princevault_data}\n\n"
+        "Please return normalized metadata in JSON format with these fields:\n"
+        "{{\n"
+        '  "title": "song title",\n'
+        '  "artist": "artist name",\n'
+        '  "album": "album name or null",\n'
+        '  "track_number": number or null,\n'
+        '  "year": 4-digit year or null,\n'
+        '  "date": "YYYY-MM-DD or YYYY or null",\n'
+        '  "category": "official/live/outtakes/unofficial",\n'
+        '  "recording_date": "YYYY-MM-DD or descriptive date",\n'
+        '  "venue": "recording location or null",\n'
+        '  "session_info": "session details or null",\n'
+        '  "genre": "music genre or null",\n'
+        '  "comments": "additional context or null",\n'
+        '  "confidence": 0.0-1.0 score\n'
+        "}}\n\n"
+        "Return ONLY valid JSON, no other text."
+    )
 
 
 @dataclass
