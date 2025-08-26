@@ -158,6 +158,13 @@ class LLMService:
             prompt = self._build_normalization_prompt(request)
             
             self.logger.info(f"Normalizing metadata for: {request.filename}")
+            self.logger.debug("=" * 80)
+            self.logger.debug("SYSTEM PROMPT:")
+            self.logger.debug(self.config.llm.system_prompt)
+            self.logger.debug("=" * 80)
+            self.logger.debug("USER PROMPT:")
+            self.logger.debug(prompt)
+            self.logger.debug("=" * 80)
             
             completion = self.client.chat.completions.create(
                 model=self.model,

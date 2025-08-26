@@ -567,7 +567,8 @@ def test_llm(
 def normalize(
     file_path: str = typer.Argument(..., help="Audio file to normalize metadata"),
     config: Optional[str] = typer.Option(None, "--config", "-c", help="Configuration file path"),
-    dry_run: bool = typer.Option(True, "--dry-run", help="Show proposed metadata without applying")
+    dry_run: bool = typer.Option(True, "--dry-run", help="Show proposed metadata without applying"),
+    debug: bool = typer.Option(False, "--debug", help="Show LLM prompts and debug info")
 ) -> None:
     """Test LLM metadata normalization with comprehensive data."""
     
@@ -582,6 +583,11 @@ def normalize(
         raise typer.Exit(1)
     
     console.print(f"[dim]Normalizing metadata for: {path}[/dim]")
+    
+    # Set up debug logging if requested
+    if debug:
+        import logging
+        logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
     
     # Load configuration
     cfg = ConfigLoader.load(config)
