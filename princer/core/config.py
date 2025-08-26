@@ -21,7 +21,7 @@ class PathConfig:
         "outtakes": "Outtakes"
     })
     logs: Optional[str] = None
-    pv_sqlite: str = "~/data/princevault/pv.sqlite"
+    pv_sqlite: str = "/Users/kverde/dev/Projects/princer/princevault.db"
     pv_xml_dir: str = "~/data/princevault/xml"
 
 

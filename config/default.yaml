@@ -6,7 +6,7 @@ paths:
     live: "Live"
     outtakes: "Outtakes"
   logs: null
-  pv_sqlite: "~/data/princevault/pv.sqlite"
+  pv_sqlite: "princevault.db"
   pv_xml_dir: "~/data/princevault/xml"
 
 behavior:
