@@ -120,7 +120,7 @@ class AcoustIDService:
                 'client': self.api_key,
                 'duration': int(duration),
                 'fingerprint': fingerprint,
-                'meta': 'recordingids'
+                'meta': 'recordings recordingids'  # Request both recordings and recordingids
             }
             
             # Make HTTP request

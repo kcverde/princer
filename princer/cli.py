@@ -299,6 +299,7 @@ def fingerprint(
                             # ISRCs
                             if recording.isrcs:
                                 console.print(f"[dim]ISRCs: {', '.join(recording.isrcs[:2])}[/dim]")
+                            
                     
                     if mb_result.error:
                         console.print(f"[yellow]Warning:[/yellow] MusicBrainz errors: {mb_result.error}")
