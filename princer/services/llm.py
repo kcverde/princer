@@ -158,13 +158,6 @@ class LLMService:
             prompt = self._build_normalization_prompt(request)
             
             self.logger.info(f"Normalizing metadata for: {request.filename}")
-            self.logger.debug("=" * 80)
-            self.logger.debug("SYSTEM PROMPT:")
-            self.logger.debug(self.config.llm.system_prompt)
-            self.logger.debug("=" * 80)
-            self.logger.debug("USER PROMPT:")
-            self.logger.debug(prompt)
-            self.logger.debug("=" * 80)
             
             completion = self.client.chat.completions.create(
                 model=self.model,
@@ -273,16 +266,38 @@ class LLMService:
                 f"  Title: {request.princevault_data.get('title', 'Unknown')}",
                 f"  Recording Date: {request.princevault_data.get('recording_date', 'Unknown')}",
                 f"  Performer: {request.princevault_data.get('performer', 'Unknown')}",
+                f"  Confidence: {request.princevault_data.get('confidence', 0):.2f}",
             ])
             
             if request.princevault_data.get('session_info'):
                 prompt_parts.append(f"  Session: {request.princevault_data['session_info']}")
             
+            if request.princevault_data.get('written_by'):
+                prompt_parts.append(f"  Written By: {request.princevault_data['written_by']}")
+                
+            if request.princevault_data.get('produced_by'):
+                prompt_parts.append(f"  Produced By: {request.princevault_data['produced_by']}")
+            
+            if request.princevault_data.get('personnel'):
+                personnel = request.princevault_data['personnel']
+                if isinstance(personnel, list):
+                    prompt_parts.append(f"  Personnel: {'; '.join(personnel[:3])}")
+                else:
+                    prompt_parts.append(f"  Personnel: {personnel}")
+            
             if request.princevault_data.get('album_appearances'):
                 prompt_parts.append(f"  Albums: {'; '.join(request.princevault_data['album_appearances'][:2])}")
                 
+            if request.princevault_data.get('related_versions'):
+                prompt_parts.append(f"  Related Versions: {'; '.join(request.princevault_data['related_versions'][:2])}")
+                
             if request.princevault_data.get('categories'):
                 prompt_parts.append(f"  Categories: {', '.join(request.princevault_data['categories'][:5])}")
+                
+            # Include raw content snippet if available for additional context
+            if request.princevault_data.get('raw_content'):
+                content = request.princevault_data['raw_content'][:200] + "..." if len(request.princevault_data['raw_content']) > 200 else request.princevault_data['raw_content']
+                prompt_parts.append(f"  Raw Content Snippet: {content}")
         
         # Add file tags if available
         if request.file_tags:
