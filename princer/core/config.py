@@ -1,32 +1,32 @@
-"""Configuration management for Princer."""
+"""Configuration management using Pydantic Settings."""
 
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
-from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
-import yaml
-from dotenv import load_dotenv
+from pydantic import Field
+from pydantic_settings import BaseSettings
 
 
-@dataclass
-class PathConfig:
+class PathConfig(BaseSettings):
     """Path-related configuration."""
     
     root: str = "/Volumes/Music/Prince"
-    category_roots: Dict[str, str] = field(default_factory=lambda: {
+    category_roots: Dict[str, str] = {
         "official": "Official",
         "unofficial": "Unofficial", 
         "live": "Live",
         "outtakes": "Outtakes"
-    })
+    }
     logs: Optional[str] = None
     pv_sqlite: str = "/Users/kverde/dev/Projects/princer/princevault.db"
     pv_xml_dir: str = "~/data/princevault/xml"
 
+    class Config:
+        env_prefix = "PRINCER_PATHS_"
 
-@dataclass
-class BehaviorConfig:
+
+class BehaviorConfig(BaseSettings):
     """Behavior and mode configuration."""
     
     tag_only: bool = False
@@ -37,49 +37,58 @@ class BehaviorConfig:
     llm_always: bool = True
     min_auto_score: Optional[float] = None
 
+    class Config:
+        env_prefix = "PRINCER_BEHAVIOR_"
 
-@dataclass
-class NamingConfig:
+
+class NamingConfig(BaseSettings):
     """Naming and template configuration."""
     
     rules_file: str = "config/naming_rules.md"
     rules_format: str = "text"
-    templates_default: Dict[str, str] = field(default_factory=lambda: {
+    templates_default: Dict[str, str] = {
         "live": "{date} - {city} - {venue} - {tracknum} {title} [{source}]{lineage_short}",
         "outtake": "{era}/{session_date} - {title}",
         "official": "{album}/{tracknum} {title}",
         "unofficial": "{setname}/{tracknum} {title}"
-    })
+    }
+
+    class Config:
+        env_prefix = "PRINCER_NAMING_"
 
 
-@dataclass
-class FieldsConfig:
+class FieldsConfig(BaseSettings):
     """Field handling configuration."""
     
-    keep_custom_tags: List[str] = field(default_factory=lambda: [
-        "LINEAGE", "TAPER", "TRANSFER"
-    ])
-    prefer_dates_from: List[str] = field(default_factory=lambda: [
-        "PrinceVault", "MusicBrainz", "FileTags"
-    ])
+    keep_custom_tags: List[str] = ["LINEAGE", "TAPER", "TRANSFER"]
+    prefer_dates_from: List[str] = ["PrinceVault", "MusicBrainz", "FileTags"]
+
+    class Config:
+        env_prefix = "PRINCER_FIELDS_"
 
 
-@dataclass
-class ApiConfig:
+class ApiConfig(BaseSettings):
     """API configuration."""
     
-    acoustid_key: str = "env:ACOUSTID_KEY"
+    acoustid_key: str = ""
+    openrouter_api_key: str = ""
+    openai_api_key: str = ""
     musicbrainz_user_agent: str = "PrinceTagger/0.1 (you@example.com)"
 
+    class Config:
+        env_prefix = ""
+        env_file = [".env", "../.env", "~/.princer/.env"]
+        env_file_encoding = 'utf-8'
+        extra = 'ignore'
 
-@dataclass
-class LlmConfig:
+
+class LlmConfig(BaseSettings):
     """LLM configuration."""
     
-    provider: str = "openrouter"  # openrouter or openai
+    provider: str = "openrouter"
     model: str = "google/gemini-2.5-flash"
     temperature: float = 0.2
-    max_tokens: int = 800  # Increased for more detailed responses
+    max_tokens: int = 800
     approval_required: bool = True
     system_prompt: str = (
         "You are a Prince music metadata expert. Analyze the provided data sources "
@@ -114,29 +123,36 @@ class LlmConfig:
         "Return ONLY valid JSON, no other text."
     )
 
+    class Config:
+        env_prefix = "PRINCER_LLM_"
 
-@dataclass
-class Config:
+
+class Config(BaseSettings):
     """Main configuration object."""
     
-    paths: PathConfig = field(default_factory=PathConfig)
-    behavior: BehaviorConfig = field(default_factory=BehaviorConfig)
-    naming: NamingConfig = field(default_factory=NamingConfig)
-    fields: FieldsConfig = field(default_factory=FieldsConfig)
-    api: ApiConfig = field(default_factory=ApiConfig)
-    llm: LlmConfig = field(default_factory=LlmConfig)
-    
-    def resolve_env_vars(self) -> None:
-        """Resolve environment variable references in config values."""
-        # Resolve API key
-        if self.api.acoustid_key.startswith("env:"):
-            env_var = self.api.acoustid_key[4:]
-            self.api.acoustid_key = os.getenv(env_var, "")
-            
-        # Resolve paths with ~ expansion
+    paths: PathConfig = Field(default_factory=PathConfig)
+    behavior: BehaviorConfig = Field(default_factory=BehaviorConfig)
+    naming: NamingConfig = Field(default_factory=NamingConfig)
+    fields: FieldsConfig = Field(default_factory=FieldsConfig)
+    api: ApiConfig = Field(default_factory=ApiConfig)
+    llm: LlmConfig = Field(default_factory=LlmConfig)
+
+    class Config:
+        env_file = [".env", "../.env", "~/.princer/.env"]
+        env_file_encoding = 'utf-8'
+        case_sensitive = False
+        extra = 'ignore'
+        env_nested_delimiter = '__'
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._expand_paths()
+
+    def _expand_paths(self):
+        """Expand user paths and resolve environment variables."""
         self.paths.pv_sqlite = os.path.expanduser(self.paths.pv_sqlite)
         self.paths.pv_xml_dir = os.path.expanduser(self.paths.pv_xml_dir)
-        
+
     def get_naming_rules_path(self) -> Path:
         """Get the full path to the naming rules file."""
         return Path(self.naming.rules_file)
@@ -181,188 +197,14 @@ class Config:
 
 
 class ConfigLoader:
-    """Handles loading and saving configuration files."""
-    
-    DEFAULT_CONFIG_PATHS = [
-        "config/default.yaml",
-        "princer.yaml", 
-        "~/.princer/config.yaml",
-        "~/.config/princer/config.yaml"
-    ]
+    """Simple config loader."""
     
     @classmethod
-    def load(cls, config_path: Optional[Union[str, Path]] = None) -> Config:
-        """Load configuration from file or defaults."""
-        
-        # Load .env file first (look in current directory)
-        cls._load_env_file()
-        
+    def load(cls, config_path: Optional[str] = None) -> Config:
+        """Load configuration."""
         if config_path:
-            return cls._load_from_path(Path(config_path))
-            
-        # Try default locations
-        for default_path in cls.DEFAULT_CONFIG_PATHS:
-            path = Path(default_path).expanduser()
-            if path.exists():
-                return cls._load_from_path(path)
-                
-        # Return default config
-        config = Config()
-        config.resolve_env_vars()
-        return config
-    
-    @classmethod
-    def _load_env_file(cls) -> None:
-        """Load environment variables from .env file."""
+            # For custom config files, we'd need to implement YAML loading
+            # For now, just load with environment variables
+            pass
         
-        # Look for .env file in current directory and parent directories
-        env_paths = [
-            Path(".env"),
-            Path("../.env"),
-            Path.home() / ".princer" / ".env"
-        ]
-        
-        for env_path in env_paths:
-            if env_path.exists():
-                load_dotenv(env_path)
-                break
-    
-    @classmethod
-    def _load_from_path(cls, config_path: Path) -> Config:
-        """Load configuration from a specific path."""
-        try:
-            with config_path.open('r', encoding='utf-8') as f:
-                data = yaml.safe_load(f) or {}
-                
-            config = cls._dict_to_config(data)
-            config.resolve_env_vars()
-            return config
-            
-        except Exception as e:
-            raise RuntimeError(f"Failed to load config from {config_path}: {e}")
-    
-    @classmethod
-    def _dict_to_config(cls, data: Dict[str, Any]) -> Config:
-        """Convert dictionary to Config object."""
-        
-        config = Config()
-        
-        # Update paths
-        if 'paths' in data:
-            paths_data = data['paths']
-            config.paths = PathConfig(
-                root=paths_data.get('root', config.paths.root),
-                category_roots=paths_data.get('category_roots', config.paths.category_roots),
-                logs=paths_data.get('logs', config.paths.logs),
-                pv_sqlite=paths_data.get('pv_sqlite', config.paths.pv_sqlite),
-                pv_xml_dir=paths_data.get('pv_xml_dir', config.paths.pv_xml_dir)
-            )
-        
-        # Update behavior
-        if 'behavior' in data:
-            behavior_data = data['behavior']
-            config.behavior = BehaviorConfig(
-                tag_only=behavior_data.get('tag_only', config.behavior.tag_only),
-                copy_files=behavior_data.get('copy_files', config.behavior.copy_files),
-                move_files=behavior_data.get('move_files', config.behavior.move_files),
-                write_tags=behavior_data.get('write_tags', config.behavior.write_tags),
-                ask_confirmation=behavior_data.get('ask_confirmation', config.behavior.ask_confirmation),
-                llm_always=behavior_data.get('llm_always', config.behavior.llm_always),
-                min_auto_score=behavior_data.get('min_auto_score', config.behavior.min_auto_score)
-            )
-        
-        # Update naming
-        if 'naming' in data:
-            naming_data = data['naming']
-            config.naming = NamingConfig(
-                rules_file=naming_data.get('rules_file', config.naming.rules_file),
-                rules_format=naming_data.get('rules_format', config.naming.rules_format),
-                templates_default=naming_data.get('templates_default', config.naming.templates_default)
-            )
-        
-        # Update fields
-        if 'fields' in data:
-            fields_data = data['fields']
-            config.fields = FieldsConfig(
-                keep_custom_tags=fields_data.get('keep_custom_tags', config.fields.keep_custom_tags),
-                prefer_dates_from=fields_data.get('prefer_dates_from', config.fields.prefer_dates_from)
-            )
-        
-        # Update API
-        if 'api' in data:
-            api_data = data['api']
-            config.api = ApiConfig(
-                acoustid_key=api_data.get('acoustid_key', config.api.acoustid_key),
-                musicbrainz_user_agent=api_data.get('musicbrainz_user_agent', config.api.musicbrainz_user_agent)
-            )
-        
-        # Update LLM
-        if 'llm' in data:
-            llm_data = data['llm']
-            config.llm = LlmConfig(
-                provider=llm_data.get('provider', config.llm.provider),
-                model=llm_data.get('model', config.llm.model),
-                temperature=llm_data.get('temperature', config.llm.temperature),
-                max_tokens=llm_data.get('max_tokens', config.llm.max_tokens),
-                approval_required=llm_data.get('approval_required', config.llm.approval_required),
-                system_prompt=llm_data.get('system_prompt', config.llm.system_prompt)
-            )
-        
-        return config
-    
-    @classmethod
-    def save_default(cls, config_path: Union[str, Path]) -> None:
-        """Save a default configuration file."""
-        
-        config = Config()
-        data = cls._config_to_dict(config)
-        
-        path = Path(config_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        
-        with path.open('w', encoding='utf-8') as f:
-            yaml.dump(data, f, default_flow_style=False, sort_keys=False, indent=2)
-    
-    @classmethod
-    def _config_to_dict(cls, config: Config) -> Dict[str, Any]:
-        """Convert Config object to dictionary."""
-        
-        return {
-            'paths': {
-                'root': config.paths.root,
-                'category_roots': config.paths.category_roots,
-                'logs': config.paths.logs,
-                'pv_sqlite': config.paths.pv_sqlite,
-                'pv_xml_dir': config.paths.pv_xml_dir
-            },
-            'behavior': {
-                'tag_only': config.behavior.tag_only,
-                'copy_files': config.behavior.copy_files,
-                'move_files': config.behavior.move_files,
-                'write_tags': config.behavior.write_tags,
-                'ask_confirmation': config.behavior.ask_confirmation,
-                'llm_always': config.behavior.llm_always,
-                'min_auto_score': config.behavior.min_auto_score
-            },
-            'naming': {
-                'rules_file': config.naming.rules_file,
-                'rules_format': config.naming.rules_format,
-                'templates_default': config.naming.templates_default
-            },
-            'fields': {
-                'keep_custom_tags': config.fields.keep_custom_tags,
-                'prefer_dates_from': config.fields.prefer_dates_from
-            },
-            'api': {
-                'acoustid_key': config.api.acoustid_key,
-                'musicbrainz_user_agent': config.api.musicbrainz_user_agent
-            },
-            'llm': {
-                'provider': config.llm.provider,
-                'model': config.llm.model,
-                'temperature': config.llm.temperature,
-                'max_tokens': config.llm.max_tokens,
-                'approval_required': config.llm.approval_required,
-                'system_prompt': config.llm.system_prompt
-            }
-        }
+        return Config()

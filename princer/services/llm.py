@@ -62,9 +62,9 @@ class LLMService:
         
         # Initialize OpenAI client
         if config.llm.provider.lower() == "openrouter":
-            api_key = self._get_api_key("OPENROUTER_API_KEY")
+            api_key = config.api.openrouter_api_key
             base_url = "https://openrouter.ai/api/v1"
-            self.model = self._get_model("OPENROUTER_MODEL", config.llm.model)
+            self.model = config.llm.model  # Use model from config
             
             # Add OpenRouter-specific headers
             self.extra_headers = {
@@ -73,7 +73,7 @@ class LLMService:
             }
         else:
             # Default to OpenAI
-            api_key = self._get_api_key("OPENAI_API_KEY") 
+            api_key = config.api.openai_api_key
             base_url = None  # Use default OpenAI base URL
             self.model = config.llm.model
             self.extra_headers = {}
@@ -241,93 +241,45 @@ class LLMService:
         else:
             current_tags_str = "  No tags found"
         
-        # Format AcoustID data
+        # Format AcoustID data - just dump raw JSON for LLM to parse
         acoustid_str = ""
         if request.acoustid_data:
-            acoustid_lines = ["AcoustID matches:"]
-            for i, match in enumerate(request.acoustid_data.get('matches', [])[:3], 1):
-                acoustid_lines.append(f"  {i}. Title: {match.get('title', 'Unknown')} | Artist: {match.get('artist', 'Unknown')} | Score: {match.get('score', 0):.3f}")
-            acoustid_str = "\n".join(acoustid_lines)
+            acoustid_str = f"AcoustID JSON data:\n{json.dumps(request.acoustid_data, indent=2)}"
         else:
             acoustid_str = "No AcoustID matches"
         
-        # Format MusicBrainz data
+        # Format MusicBrainz data - just dump raw JSON for LLM to parse
         musicbrainz_str = ""
         if request.musicbrainz_data:
-            mb_lines = [
-                "MusicBrainz details:",
-                f"  Recording ID: {request.musicbrainz_data.get('id', 'N/A')}",
-                f"  Title: {request.musicbrainz_data.get('title', 'Unknown')}",
-                f"  Artist: {request.musicbrainz_data.get('artist_name', 'Unknown')}",
-                f"  Date: {request.musicbrainz_data.get('date', 'Unknown')}",
-                f"  Duration: {request.musicbrainz_data.get('length', 'Unknown')}",
-            ]
-            
-            if request.musicbrainz_data.get('disambiguation'):
-                mb_lines.append(f"  Context: {request.musicbrainz_data['disambiguation']}")
-            
-            if request.musicbrainz_data.get('releases'):
-                mb_lines.append("  Releases:")
-                for release in request.musicbrainz_data['releases'][:2]:
-                    mb_lines.append(f"    - {release.get('title', 'Unknown')} ({release.get('date', 'Unknown')})")
-            
-            musicbrainz_str = "\n".join(mb_lines)
+            musicbrainz_str = f"MusicBrainz JSON data:\n{json.dumps(request.musicbrainz_data, indent=2)}"
         else:
             musicbrainz_str = "No MusicBrainz data"
         
-        # Format PrinceVault data
+        # Format PrinceVault data - just dump raw JSON for LLM to parse
         princevault_str = ""
         if request.princevault_data:
-            pv_lines = [
-                "PrinceVault details:",
-                f"  Title: {request.princevault_data.get('title', 'Unknown')}",
-                f"  Recording Date: {request.princevault_data.get('recording_date', 'Unknown')}",
-                f"  Performer: {request.princevault_data.get('performer', 'Unknown')}",
-                f"  Confidence: {request.princevault_data.get('confidence', 0):.2f}",
-            ]
-            
-            if request.princevault_data.get('session_info'):
-                pv_lines.append(f"  Session: {request.princevault_data['session_info']}")
-            
-            if request.princevault_data.get('written_by'):
-                pv_lines.append(f"  Written By: {request.princevault_data['written_by']}")
-                
-            if request.princevault_data.get('produced_by'):
-                pv_lines.append(f"  Produced By: {request.princevault_data['produced_by']}")
-            
-            if request.princevault_data.get('personnel'):
-                personnel = request.princevault_data['personnel']
-                if isinstance(personnel, list):
-                    pv_lines.append(f"  Personnel: {'; '.join(personnel[:3])}")
-                else:
-                    pv_lines.append(f"  Personnel: {personnel}")
-            
-            if request.princevault_data.get('album_appearances'):
-                pv_lines.append(f"  Albums: {'; '.join(request.princevault_data['album_appearances'][:2])}")
-                
-            if request.princevault_data.get('related_versions'):
-                pv_lines.append(f"  Related Versions: {'; '.join(request.princevault_data['related_versions'][:2])}")
-                
-            if request.princevault_data.get('categories'):
-                pv_lines.append(f"  Categories: {', '.join(request.princevault_data['categories'][:5])}")
-                
-            # Include raw content snippet if available for additional context
-            if request.princevault_data.get('raw_content'):
-                content = request.princevault_data['raw_content'][:200] + "..." if len(request.princevault_data['raw_content']) > 200 else request.princevault_data['raw_content']
-                pv_lines.append(f"  Raw Content Snippet: {content}")
-            
-            princevault_str = "\n".join(pv_lines)
+            try:
+                princevault_str = f"PrinceVault JSON data:\n{json.dumps(request.princevault_data, indent=2)}"
+            except (TypeError, ValueError) as e:
+                self.logger.error(f"Failed to serialize PrinceVault data to JSON: {e}")
+                princevault_str = f"PrinceVault data (serialization failed): {str(request.princevault_data)[:1000]}..."
         else:
             princevault_str = "No PrinceVault data"
         
         # Use the template from config
-        return self.config.llm.user_prompt_template.format(
-            filename=request.filename,
-            duration=duration,
-            format=format_info,
-            bitrate=bitrate,
-            current_tags=current_tags_str,
-            acoustid_data=acoustid_str,
-            musicbrainz_data=musicbrainz_str,
-            princevault_data=princevault_str
-        )
+        try:
+            return self.config.llm.user_prompt_template.format(
+                filename=request.filename,
+                duration=duration,
+                format=format_info,
+                bitrate=bitrate,
+                current_tags=current_tags_str,
+                acoustid_data=acoustid_str,
+                musicbrainz_data=musicbrainz_str,
+                princevault_data=princevault_str
+            )
+        except Exception as e:
+            self.logger.error(f"Failed to format prompt template: {e}")
+            self.logger.error(f"Template: {self.config.llm.user_prompt_template}")
+            self.logger.error(f"Data types: filename={type(request.filename)}, duration={type(duration)}, format={type(format_info)}, bitrate={type(bitrate)}")
+            raise

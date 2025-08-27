@@ -116,15 +116,45 @@ class PrinceVaultService:
                         elif len(song_title_clean) <= 6 and len(search_term) > 12:
                             length_penalty = 0.7  # Moderate penalty
                         
-                        # Use weighted average favoring exact ratio matches
-                        base_confidence = max(
-                            ratio * 1.0,           # Full weight for exact matching
-                            partial * 0.8,         # Slightly lower for partial
-                            token_sort * 0.6,      # Lower for token-based
-                            token_set * 0.5        # Lowest for token set
-                        )
+                        # More conservative scoring that penalizes very different lengths
+                        # and requires higher exact matches for high confidence
                         
-                        confidence = (base_confidence + content_bonus) * length_penalty
+                        # Length similarity check - penalize very different lengths
+                        len_search = len(search_term)
+                        len_title = len(song_title_clean)
+                        length_diff_penalty = 1.0
+                        
+                        if len_search > 0 and len_title > 0:
+                            length_ratio = min(len_search, len_title) / max(len_search, len_title)
+                            if length_ratio < 0.5:  # Very different lengths
+                                length_diff_penalty = 0.5
+                            elif length_ratio < 0.7:  # Moderately different lengths
+                                length_diff_penalty = 0.8
+                        
+                        # More conservative weighting that heavily favors exact matches
+                        if ratio >= 0.9:  # Near-exact match
+                            base_confidence = ratio
+                        elif ratio >= 0.7:  # Good match
+                            base_confidence = ratio * 0.9
+                        elif partial >= 0.85:  # High partial match, but capped
+                            base_confidence = partial * 0.6  # More conservative
+                        else:  # Lower confidence for other matches
+                            base_confidence = max(
+                                ratio * 0.8,
+                                partial * 0.4,      # Much more conservative for partial
+                                token_sort * 0.5,
+                                token_set * 0.4
+                            )
+                        
+                        # Apply both length penalties
+                        confidence = base_confidence * length_penalty * length_diff_penalty
+                        
+                        # Content bonus should be multiplicative, not additive, and more conservative
+                        if content_bonus > 0:
+                            # Only apply content bonus if base confidence is already reasonable
+                            if base_confidence >= 0.3:
+                                confidence = confidence * (1.0 + content_bonus * 0.3)  # Much smaller bonus
+                        
                         # Cap at 1.0
                         confidence = min(confidence, 1.0)
                         
@@ -277,94 +307,6 @@ class PrinceVaultService:
         
         return song
     
-    def parse_comprehensive_metadata(self, song: PVSong) -> Dict[str, Any]:
-        """Parse comprehensive metadata from PrinceVault content."""
-        
-        content = song.content
-        metadata = {}
-        
-        # First released
-        metadata['first_released'] = self._extract_field(content, r'\|\s*first released\s*=\s*([^\n|]+)')
-        
-        # Album information
-        metadata['album'] = self._extract_field(content, r'\|\s*album\(s\)\s*=\s*([^\n|]+)')
-        
-        # Detailed studio info from recording info section
-        studio_detailed = self._extract_field(content, r'\|\s*studio\s*=\s*([^\n|]+)')
-        if studio_detailed:
-            metadata['studio_detailed'] = self._clean_wiki_text(studio_detailed)
-        
-        # Additional recording info
-        metadata['additional_info'] = self._extract_field(content, r'\|\s*additional info\s*=\s*([^\n|]+)')
-        
-        # First live appearance
-        first_live = self._extract_field(content, r'\|\s*first live appearance\s*=\s*([^\n|]+)')
-        if first_live:
-            # Clean up the wiki markup for live appearances
-            first_live_clean = re.sub(r'\[\[[^\]]*\|([^\]]+)\]\]', r'\1', first_live)
-            first_live_clean = re.sub(r'<[^>]*>', '', first_live_clean)
-            metadata['first_live_appearance'] = first_live_clean.strip()
-        
-        # Introduction/context - extract plain text summary 
-        intro_match = re.search(r'\|\s*introduction\s*=\s*(.*?)(?=\n\||\n<br>)', content, re.DOTALL)
-        if intro_match:
-            intro = intro_match.group(1).strip()
-            
-            # Extract key facts manually instead of trying to clean wiki markup
-            if "cover version" in intro.lower():
-                if "Pearl Jam" in intro:
-                    metadata['introduction'] = "Cover version of Pearl Jam's track from their 1991 debut album Ten. Prince's version is instrumental."
-                else:
-                    metadata['introduction'] = "Cover version of original track."
-            elif "instrumental" in intro.lower():
-                metadata['introduction'] = "Instrumental version."
-            else:
-                # Clean wiki markup more carefully
-                intro_clean = self._clean_wiki_text(intro)
-                if len(intro_clean) > 20:
-                    metadata['introduction'] = intro_clean
-        
-        # Categories
-        categories_match = re.search(r'\|\s*categories\s*=\s*(.+?)(?=\n\}\}|\n\|)', content, re.DOTALL)
-        if categories_match:
-            categories_text = categories_match.group(1)
-            # Extract category names from [[Category:Name]] format
-            category_matches = re.findall(r'\[\[Category:([^\]]+)\]\]', categories_text)
-            if category_matches:
-                # Clean up category names
-                clean_categories = []
-                for cat in category_matches:
-                    clean_cat = cat.replace('‏‎', '').strip()
-                    if clean_cat and clean_cat not in clean_categories:
-                        clean_categories.append(clean_cat)
-                metadata['categories'] = clean_categories
-        
-        # Released versions info
-        released_versions = self._extract_field(content, r'\|\s*released versions\s*=\s*([^\n|]+)')
-        if released_versions:
-            metadata['released_versions'] = self._clean_wiki_text(released_versions)
-        
-        # Performance info
-        performed_regularly = self._extract_field(content, r'\|\s*performed regularly on\s*=\s*([^\n|]+)')
-        if performed_regularly and performed_regularly.lower() != 'none':
-            metadata['performed_regularly'] = self._clean_wiki_text(performed_regularly)
-        
-        performed_occasionally = self._extract_field(content, r'\|\s*performed occasionally in\s*=\s*([^\n|]+)')
-        if performed_occasionally:
-            metadata['performed_occasionally'] = self._clean_wiki_text(performed_occasionally)
-        
-        # Streaming/broadcast info
-        streaming_match = re.search(r'Drfunkenberry\.com.*?audio stream', content)
-        if streaming_match:
-            metadata['streaming_info'] = 'Streamed on Drfunkenberry.com'
-        
-        # Duration from broadcast info
-        duration_match = re.search(r'\|\s*2=\s*([\d:]+)', content)
-        if duration_match:
-            metadata['duration'] = duration_match.group(1)
-        
-        return metadata
-    
     def _extract_field(self, content: str, pattern: str) -> Optional[str]:
         """Extract a single field from wiki content."""
         match = re.search(pattern, content, re.IGNORECASE)
@@ -407,17 +349,4 @@ class PrinceVaultService:
         
         return text
     
-    def format_song_summary(self, song: PVSong) -> str:
-        """Format song for display."""
-        parts = [f"'{song.title}'"]
-        
-        if song.performer and song.performer.lower() != 'prince':
-            parts.append(f"by {song.performer}")
-        
-        if song.recording_date:
-            parts.append(f"({song.recording_date})")
-        
-        if song.album_appearances:
-            parts.append(f"from {song.album_appearances[0]}")
-        
-        return " ".join(parts)
+    # Removed format_song_summary - use raw data instead

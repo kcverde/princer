@@ -81,7 +81,8 @@ class MBRecording:
 class MBLookupResult:
     """Result of MusicBrainz lookup."""
     
-    recordings: List[MBRecording]
+    recordings: List[MBRecording]  # Keep for backwards compatibility
+    raw_recordings: List[Dict[str, Any]] = None  # Add raw JSON data
     error: Optional[str] = None
 
 
@@ -116,6 +117,7 @@ class MusicBrainzService:
         """Look up MusicBrainz recordings by ID."""
         
         recordings = []
+        raw_recordings = []
         errors = []
         
         for recording_id in recording_ids:
@@ -133,6 +135,11 @@ class MusicBrainzService:
                 )
                 
                 recording_data = result['recording']
+                
+                # Store raw JSON for LLM processing
+                raw_recordings.append(recording_data)
+                
+                # Still parse for backwards compatibility (display functions)
                 recording = self._parse_recording(recording_data)
                 recordings.append(recording)
                 
@@ -145,7 +152,7 @@ class MusicBrainzService:
                 errors.append(f"Error for {recording_id}: {str(e)}")
         
         error_msg = "; ".join(errors) if errors else None
-        return MBLookupResult(recordings=recordings, error=error_msg)
+        return MBLookupResult(recordings=recordings, raw_recordings=raw_recordings, error=error_msg)
     
     def _parse_recording(self, recording_data: Dict[str, Any]) -> MBRecording:
         """Parse enhanced MusicBrainz recording data into our format."""
@@ -371,21 +378,4 @@ class MusicBrainzService:
             self.logger.error(f"Error searching MusicBrainz for '{title}': {e}")
             return MBLookupResult(recordings=[], error=str(e))
     
-    def format_recording_summary(self, recording: MBRecording) -> str:
-        """Format a recording for display."""
-        
-        parts = [f"'{recording.title}' by {recording.artist_name}"]
-        
-        if recording.date:
-            parts.append(f"({recording.date})")
-        
-        if recording.disambiguation:
-            parts.append(f"[{recording.disambiguation}]")
-        
-        if recording.length:
-            duration_sec = recording.length // 1000
-            minutes = duration_sec // 60
-            seconds = duration_sec % 60
-            parts.append(f"{minutes}:{seconds:02d}")
-        
-        return " ".join(parts)
+    # Removed format_recording_summary - use raw data instead

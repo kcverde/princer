@@ -191,17 +191,4 @@ class AcoustIDService:
         matches.sort(key=lambda x: x.score, reverse=True)
         return matches
     
-    def format_matches_summary(self, matches: List[AcoustIDMatch]) -> str:
-        """Format matches for display."""
-        
-        if not matches:
-            return "No high-confidence matches found"
-        
-        lines = []
-        for i, match in enumerate(matches[:3], 1):  # Show top 3
-            lines.append(
-                f"{i}. Score: {match.score:.2f}, "
-                f"Recording IDs: {len(match.recording_ids)}"
-            )
-        
-        return "\n".join(lines)
+    # Removed format_matches_summary - use raw data instead

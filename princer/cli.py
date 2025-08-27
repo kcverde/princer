@@ -1,5 +1,6 @@
 """CLI interface for Princer."""
 
+import json
 from pathlib import Path
 from typing import Optional
 
@@ -8,6 +9,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 from rich import box
+from tabulate import tabulate
 
 from princer.models.audio import AudioFile, AudioFileInfo
 from princer.core.config import ConfigLoader
@@ -25,6 +27,153 @@ app = typer.Typer(
 console = Console()
 
 
+# Constants for readability
+MAX_ACOUSTID_MATCHES = 3
+MAX_SEARCH_TERMS = 2  
+MAX_PV_MATCHES = 3
+MIN_ACOUSTID_SCORE = 0.8
+MIN_PV_CONFIDENCE = 0.7
+MAX_CONTENT_LENGTH = 500
+
+
+def _validate_audio_file(file_path: str) -> Path:
+    """Validate that an audio file exists and is supported."""
+    path = Path(file_path)
+    
+    if not path.exists():
+        console.print(f"[red]Error:[/red] File not found: {file_path}")
+        raise typer.Exit(1)
+    
+    if not AudioFile.is_supported(path):
+        console.print(f"[red]Error:[/red] Unsupported file format: {path.suffix}")
+        console.print(f"Supported formats: {', '.join(AudioFile.SUPPORTED_EXTENSIONS)}")
+        raise typer.Exit(1)
+    
+    return path
+
+
+def _check_api_key(cfg) -> None:
+    """Check that required API key is available."""
+    if not cfg.api.acoustid_key:
+        console.print("[red]Error:[/red] No AcoustID API key found.")
+        console.print("Set your API key in the ACOUSTID_KEY environment variable.")
+        console.print("Get a free key at: https://acoustid.org/api-key")
+        raise typer.Exit(1)
+
+
+def _get_file_info(path: Path) -> dict:
+    """Extract basic file information."""
+    audio_file = AudioFile(path)
+    info_result = audio_file.extract_info()
+    
+    return {
+        'path': path,
+        'filename': info_result.filename,
+        'duration_seconds': info_result.duration_seconds,
+        'format': getattr(info_result, 'format', 'Unknown'),
+        'bitrate': getattr(info_result, 'bitrate', None),
+        'tags': info_result.tags or {}
+    }
+
+
+def _get_acoustid_data(path: Path, acoustid_service: AcoustIDService) -> dict:
+    """Generate fingerprint and get AcoustID matches."""
+    acoustid_result = acoustid_service.fingerprint_file(path)
+    
+    if acoustid_result.error:
+        raise ValueError(f"Fingerprinting failed: {acoustid_result.error}")
+    
+    return {
+        'fingerprint': acoustid_result.fingerprint,
+        'duration': acoustid_result.duration,
+        'matches': acoustid_result.acoustid_matches
+    }
+
+
+def _get_musicbrainz_data(acoustid_data: dict, acoustid_service: AcoustIDService, mb_service: Optional[MusicBrainzService]) -> dict:
+    """Collect MusicBrainz recordings from AcoustID matches."""
+    recordings = []
+    raw_recordings = []
+    
+    if acoustid_data['matches'] and mb_service:
+        # Use a mock FingerprintResult to leverage existing logic
+        from princer.services.acoustid import FingerprintResult
+        acoustid_result = FingerprintResult(
+            fingerprint=acoustid_data['fingerprint'],
+            duration=acoustid_data['duration'],
+            acoustid_matches=acoustid_data['matches']
+        )
+        
+        best_matches = acoustid_service.get_best_matches(acoustid_result, min_score=MIN_ACOUSTID_SCORE)
+        if best_matches:
+            recording_ids = []
+            for match in best_matches[:MAX_ACOUSTID_MATCHES]:
+                recording_ids.extend(match.recording_ids)
+            
+            if recording_ids:
+                mb_result = mb_service.lookup_recordings(recording_ids)
+                if mb_result.recordings:
+                    recordings = mb_result.recordings
+                raw_recordings = mb_result.raw_recordings or []
+    
+    return {'recordings': recordings, 'raw_recordings': raw_recordings}
+
+
+def _get_search_terms(acoustid_matches: list, filename: str) -> set:
+    """Extract search terms from AcoustID matches or fallback to filename."""
+    search_terms = set()
+    
+    if acoustid_matches:
+        for match in acoustid_matches[:MAX_SEARCH_TERMS]:
+            title = match.get('title', '').strip()
+            if title and title.lower() != 'unknown':
+                search_terms.add(title)
+    
+    # Fallback to filename if no good titles found
+    if not search_terms:
+        search_terms.add(filename)
+    
+    return search_terms
+
+
+def _deduplicate_pv_matches(pv_matches: list) -> list:
+    """Remove duplicate PrinceVault matches and sort by confidence."""
+    seen_ids = set()
+    unique_matches = []
+    
+    for match in pv_matches:
+        if match.song.id not in seen_ids:
+            unique_matches.append(match)
+            seen_ids.add(match.song.id)
+    
+    return sorted(unique_matches, key=lambda x: x.confidence, reverse=True)[:MAX_PV_MATCHES]
+
+
+def _get_princevault_data(acoustid_data: dict, filename: str, pv_service: Optional[PrinceVaultService]) -> dict:
+    """Collect PrinceVault matches based on AcoustID data or filename."""
+    matches = []
+    raw_content = ""
+    
+    if not pv_service:
+        return {'matches': matches, 'raw_content': raw_content}
+    
+    search_terms = _get_search_terms(acoustid_data['matches'], filename)
+    
+    # Search PrinceVault with each term
+    for search_title in list(search_terms)[:MAX_SEARCH_TERMS]:
+        pv_results = pv_service.search_by_title(search_title, limit=MAX_PV_MATCHES, min_confidence=MIN_PV_CONFIDENCE)
+        if pv_results:
+            matches.extend(pv_results)
+            # Get raw content from best match for additional context
+            if not raw_content and pv_results[0].confidence >= MIN_PV_CONFIDENCE:
+                best_song = pv_results[0].song
+                content = best_song.content
+                raw_content = content[:MAX_CONTENT_LENGTH] + "..." if len(content) > MAX_CONTENT_LENGTH else content
+    
+    matches = _deduplicate_pv_matches(matches)
+    return {'matches': matches, 'raw_content': raw_content}
+
+
 def _collect_metadata(
     path: Path, 
     acoustid_service: AcoustIDService,
@@ -36,87 +185,16 @@ def _collect_metadata(
     
     Returns a dict with file_info, acoustid, musicbrainz, and princevault data.
     """
-    # Get audio file info first
-    audio_file = AudioFile(path)
-    info_result = audio_file.extract_info()
-    
-    # Generate fingerprint and get AcoustID matches
-    acoustid_result = acoustid_service.fingerprint_file(path)
-    
-    if acoustid_result.error:
-        raise ValueError(f"Fingerprinting failed: {acoustid_result.error}")
-    
-    # Collect MusicBrainz data if service available
-    mb_recordings = []
-    if acoustid_result.acoustid_matches and mb_service:
-        best_matches = acoustid_service.get_best_matches(acoustid_result, min_score=0.8)
-        if best_matches:
-            recording_ids = []
-            for match in best_matches[:3]:  # Top 3 matches
-                recording_ids.extend(match.recording_ids)
-            
-            if recording_ids:
-                mb_result = mb_service.lookup_recordings(recording_ids)
-                if mb_result.recordings:
-                    mb_recordings = mb_result.recordings
-    
-    # Collect PrinceVault data if service available
-    pv_matches = []
-    pv_raw_content = ""
-    if pv_service:
-        search_terms = set()
-        
-        # Get search terms from AcoustID matches
-        if acoustid_result.acoustid_matches:
-            for match in acoustid_result.acoustid_matches[:2]:
-                title = match.get('title', '').strip()
-                if title and title.lower() != 'unknown':
-                    search_terms.add(title)
-        
-        # Fall back to filename if no good titles found
-        if not search_terms:
-            search_terms.add(info_result.filename)
-        
-        # Search PrinceVault with each term
-        for search_title in list(search_terms)[:2]:  # Limit to 2 searches
-            pv_results = pv_service.search_by_title(search_title, limit=3, min_confidence=0.7)
-            if pv_results:
-                pv_matches.extend(pv_results)
-                # Get raw content from best match for additional context
-                if not pv_raw_content and pv_results[0].confidence >= 0.7:
-                    best_song = pv_results[0].song
-                    pv_raw_content = best_song.content[:500] + "..." if len(best_song.content) > 500 else best_song.content
-        
-        # Remove duplicates and sort by confidence
-        seen_ids = set()
-        unique_matches = []
-        for match in pv_matches:
-            if match.song.id not in seen_ids:
-                unique_matches.append(match)
-                seen_ids.add(match.song.id)
-        pv_matches = sorted(unique_matches, key=lambda x: x.confidence, reverse=True)[:3]
+    file_info = _get_file_info(path)
+    acoustid_data = _get_acoustid_data(path, acoustid_service)
+    musicbrainz_data = _get_musicbrainz_data(acoustid_data, acoustid_service, mb_service)
+    princevault_data = _get_princevault_data(acoustid_data, file_info['filename'], pv_service)
     
     return {
-        'file_info': {
-            'path': path,
-            'filename': info_result.filename,
-            'duration_seconds': info_result.duration_seconds,
-            'format': getattr(info_result, 'format', 'Unknown'),
-            'bitrate': getattr(info_result, 'bitrate', None),
-            'tags': info_result.tags or {}
-        },
-        'acoustid': {
-            'fingerprint': acoustid_result.fingerprint,
-            'duration': acoustid_result.duration,
-            'matches': acoustid_result.acoustid_matches
-        },
-        'musicbrainz': {
-            'recordings': mb_recordings
-        },
-        'princevault': {
-            'matches': pv_matches,
-            'raw_content': pv_raw_content
-        }
+        'file_info': file_info,
+        'acoustid': acoustid_data,
+        'musicbrainz': musicbrainz_data,
+        'princevault': princevault_data
     }
 
 
@@ -127,6 +205,74 @@ def format_file_size(size_bytes: int) -> str:
             return f"{size_bytes:.1f} {unit}"
         size_bytes /= 1024.0
     return f"{size_bytes:.1f} TB"
+
+
+def _display_file_summary(metadata: dict) -> None:
+    """Display basic file information table."""
+    file_info = metadata['file_info']
+    
+    data = [["Duration", f"{file_info['duration_seconds']:.1f}s"]]
+    if file_info['format'] != 'Unknown':
+        data.append(["Format", file_info['format']])
+    if file_info['bitrate']:
+        bitrate_kbps = file_info['bitrate'] // 1000 if file_info['bitrate'] >= 1000 else file_info['bitrate']
+        data.append(["Bitrate", f"{bitrate_kbps} kbps"])
+    
+    console.print(f"\n[bold]File: {file_info['filename']}[/bold]")
+    console.print(tabulate(data, headers=["Property", "Value"], tablefmt="rounded_grid"))
+
+
+def _display_current_tags(metadata: dict) -> None:
+    """Display current file tags table."""
+    file_tags = metadata['file_info']['tags']
+    
+    console.print(f"\n[bold]Current Tags[/bold]")
+    if file_tags:
+        data = [[key.title(), str(value)] for key, value in file_tags.items()]
+        console.print(tabulate(data, headers=["Tag", "Value"], tablefmt="rounded_grid"))
+    else:
+        console.print("[dim]No tags found[/dim]")
+
+
+def _display_fingerprint_info(metadata: dict) -> None:
+    """Display audio fingerprint information table."""
+    acoustid_data = metadata['acoustid']
+    
+    data = [
+        ["Duration", f"{acoustid_data['duration']:.1f} seconds"],
+        ["Fingerprint ID", acoustid_data['fingerprint'][:16] + "..."],
+        ["AcoustID Matches", str(len(acoustid_data['matches']))]
+    ]
+    
+    console.print(f"\n[bold]Audio Fingerprint[/bold]")
+    console.print(tabulate(data, headers=["Property", "Value"], tablefmt="rounded_grid"))
+
+
+def _display_musicbrainz_matches(raw_data: list) -> None:
+    """Display raw MusicBrainz data for debug."""
+    if not raw_data:
+        return
+        
+    console.print()
+    console.print("[bold]MusicBrainz Raw Data:[/bold]")
+    console.print(json.dumps(raw_data, indent=2))
+
+
+def _display_princevault_matches(matches: list) -> None:
+    """Display raw PrinceVault data for debug."""
+    if not matches:
+        return
+        
+    console.print()
+    console.print("[bold]PrinceVault Raw Data:[/bold]")
+    # Convert to dict for JSON serialization
+    raw_data = []
+    for match in matches:
+        raw_data.append({
+            'confidence': match.confidence,
+            'song': match.song.__dict__
+        })
+    console.print(json.dumps(raw_data, indent=2))
 
 
 def display_audio_info(info: AudioFileInfo) -> None:
@@ -189,18 +335,11 @@ def info(
 ) -> None:
     """Display detailed information about an audio file."""
     
-    path = Path(file_path)
-    
-    if not path.exists():
-        console.print(f"[red]Error:[/red] File not found: {file_path}")
-        raise typer.Exit(1)
-    
-    if not AudioFile.is_supported(path):
-        console.print(f"[red]Error:[/red] Unsupported file format: {path.suffix}")
-        console.print(f"Supported formats: {', '.join(AudioFile.SUPPORTED_EXTENSIONS)}")
-        raise typer.Exit(1)
+    path = _validate_audio_file(file_path)
     
     console.print(f"[dim]Analyzing file: {path}[/dim]")
+    if verbose:
+        console.print(f"[dim]Verbose mode enabled[/dim]")
     console.print()
     
     audio_file = AudioFile(path)
@@ -218,27 +357,12 @@ def fingerprint(
 ) -> None:
     """Generate audio fingerprint and find matches via AcoustID + MusicBrainz + PrinceVault."""
     
-    path = Path(file_path)
-    
-    if not path.exists():
-        console.print(f"[red]Error:[/red] File not found: {file_path}")
-        raise typer.Exit(1)
-    
-    if not AudioFile.is_supported(path):
-        console.print(f"[red]Error:[/red] Unsupported file format: {path.suffix}")
-        raise typer.Exit(1)
-    
+    path = _validate_audio_file(file_path)
     console.print(f"[dim]Fingerprinting file: {path}[/dim]")
     
-    # Load configuration
+    # Load configuration and check API key
     cfg = ConfigLoader.load(config)
-    
-    # Check for API key
-    if not cfg.api.acoustid_key:
-        console.print("[red]Error:[/red] No AcoustID API key found.")
-        console.print("Set your API key in the ACOUSTID_KEY environment variable.")
-        console.print("Get a free key at: https://acoustid.org/api-key")
-        raise typer.Exit(1)
+    _check_api_key(cfg)
     
     # Initialize services
     acoustid_service = AcoustIDService(cfg)
@@ -255,45 +379,15 @@ def fingerprint(
     
     # Display file info first
     console.print()
-    file_info = metadata['file_info']
-    file_table = Table(title=f"File: {file_info['filename']}", box=box.ROUNDED)
-    file_table.add_column("Property", style="cyan", width=20)
-    file_table.add_column("Value", style="white")
-    
-    file_table.add_row("Duration", f"{file_info['duration_seconds']:.1f}s")
-    if file_info['format'] != 'Unknown':
-        file_table.add_row("Format", file_info['format'])
-    if file_info['bitrate']:
-        bitrate_kbps = file_info['bitrate'] // 1000 if file_info['bitrate'] >= 1000 else file_info['bitrate']
-        file_table.add_row("Bitrate", f"{bitrate_kbps} kbps")
-    
-    console.print(file_table)
+    _display_file_summary(metadata)
     
     # Display existing tags
     console.print()
-    tags_table = Table(title="Current Tags", box=box.ROUNDED)
-    tags_table.add_column("Tag", style="cyan")
-    tags_table.add_column("Value", style="white")
-    
-    if file_info['tags']:
-        for key, value in file_info['tags'].items():
-            tags_table.add_row(key.title(), str(value))
-    else:
-        tags_table.add_row("Status", "[dim]No tags found[/dim]")
-    
-    console.print(tags_table)
+    _display_current_tags(metadata)
     
     # Display fingerprint info
     console.print()
-    fp_table = Table(title="Audio Fingerprint", box=box.ROUNDED)
-    fp_table.add_column("Property", style="cyan")
-    fp_table.add_column("Value", style="white")
-    
-    fp_table.add_row("Duration", f"{metadata['acoustid']['duration']:.1f} seconds")
-    fp_table.add_row("Fingerprint ID", metadata['acoustid']['fingerprint'][:16] + "...")
-    fp_table.add_row("AcoustID Matches", str(len(metadata['acoustid']['matches'])))
-    
-    console.print(fp_table)
+    _display_fingerprint_info(metadata)
     
     # Display AcoustID matches
     if metadata['acoustid']['matches']:
@@ -320,248 +414,19 @@ def fingerprint(
         console.print(matches_table)
         
         # Display MusicBrainz details
-        if lookup_mb and metadata['musicbrainz']['recordings']:
-            console.print()
-            console.print("[bold]MusicBrainz Details:[/bold]")
+        if lookup_mb:
+            _display_musicbrainz_matches(metadata['musicbrainz'].get('raw_recordings', []))
             
-            for i, recording in enumerate(metadata['musicbrainz']['recordings'], 1):
-                console.print()
-                console.print(f"[bold cyan]Match {i}: {recording.title} by {recording.artist_name}[/bold cyan]")
-                
-                # Comprehensive MusicBrainz info table
-                basic_table = Table(title="MusicBrainz Details", box=box.ROUNDED)
-                basic_table.add_column("Property", style="cyan")
-                basic_table.add_column("Value", style="white")
-                
-                # Core info
-                basic_table.add_row("Recording ID", recording.id)
-                basic_table.add_row("Artist ID", recording.artist_id or "Unknown")
-                basic_table.add_row("Date", recording.date or "Unknown")
-                
-                # Duration
-                duration = "Unknown"
-                if recording.length:
-                    try:
-                        length_ms = int(recording.length)
-                        duration_sec = length_ms // 1000
-                        minutes = duration_sec // 60
-                        seconds = duration_sec % 60
-                        duration = f"{minutes}:{seconds:02d} ({recording.length}ms)"
-                    except (ValueError, TypeError):
-                        duration = f"{recording.length} (raw)"
-                basic_table.add_row("Duration", duration)
-                
-                if recording.disambiguation:
-                    basic_table.add_row("Disambiguation", recording.disambiguation)
-                if recording.release_status:
-                    basic_table.add_row("Release Status", recording.release_status)
-                
-                # Show all releases
-                if recording.releases:
-                    for idx, release in enumerate(recording.releases[:3]):
-                        release_info = f"{release.get('title', 'Unknown')}"
-                        if release.get('date'):
-                            release_info += f" ({release['date']})"
-                        if release.get('country'):
-                            release_info += f" [{release['country']}]"
-                        if release.get('status'):
-                            release_info += f" - {release['status']}"
-                        basic_table.add_row(f"Release {idx+1}", release_info)
-                
-                # Artist credits (full details)
-                if recording.artist_credits:
-                    for idx, credit in enumerate(recording.artist_credits[:3]):
-                        credit_info = f"{credit.get('artist_name', 'Unknown')}"
-                        if credit.get('name') != credit.get('artist_name'):
-                            credit_info += f" (as {credit.get('name')})"
-                        if credit.get('joinphrase'):
-                            credit_info += f" {credit['joinphrase']}"
-                        basic_table.add_row(f"Credit {idx+1}", credit_info)
-                
-                console.print(basic_table)
-                
-                # Recording venue/place
-                if recording.recording_place:
-                    place = recording.recording_place
-                    venue_info = place.name
-                    if place.area:
-                        venue_info += f", {place.area}"
-                    if place.type:
-                        venue_info += f" ({place.type})"
-                        
-                    venue_table = Table(title="Recording Location", box=box.ROUNDED)
-                    venue_table.add_column("Venue", style="green")
-                    venue_table.add_row(venue_info)
-                    console.print(venue_table)
-                
-                # Works (compositions)
-                if recording.works:
-                    works_table = Table(title="Original Compositions", box=box.ROUNDED)
-                    works_table.add_column("Work", style="magenta")
-                    works_table.add_column("Type", style="dim")
-                    
-                    for work in recording.works[:3]:  # Limit display
-                        works_table.add_row(
-                            work.title,
-                            work.type or "Song"
-                        )
-                    console.print(works_table)
-                
-                # Tags
-                if recording.tags:
-                    popular_tags = []
-                    for tag in recording.tags:
-                        count = tag.get('count', 0)
-                        # Convert count to int if it's a string
-                        try:
-                            count_int = int(count) if isinstance(count, str) else count
-                            if count_int > 1:
-                                popular_tags.append(tag)
-                        except ValueError:
-                            continue
-                    popular_tags = popular_tags[:5]
-                    if popular_tags:
-                        tags_text = ", ".join([tag['name'] for tag in popular_tags])
-                        console.print(f"[dim]Tags: {tags_text}[/dim]")
-                
-                # URLs
-                if recording.urls:
-                    url_types = {}
-                    for url in recording.urls:
-                        url_type = url.get('type', 'link')
-                        if url_type not in url_types:
-                            url_types[url_type] = url.get('url', '')
-                    
-                    if url_types:
-                        console.print("[dim]External links: " + 
-                                    ", ".join([f"{k}" for k in url_types.keys()]) + "[/dim]")
-                
-                # Related recordings
-                if recording.related_recordings:
-                    console.print(f"[dim]Related recordings: {len(recording.related_recordings)} other versions[/dim]")
-                
-                # ISRCs
-                if recording.isrcs:
-                    console.print(f"[dim]ISRCs: {', '.join(recording.isrcs[:2])}[/dim]")
-        
         # Display PrinceVault matches
-        if lookup_pv and metadata['princevault']['matches']:
-            console.print()
-            console.print("[bold]PrinceVault Matches:[/bold]")
-            
-            pv_table = Table(title="PrinceVault Matches", box=box.ROUNDED)
-            pv_table.add_column("Confidence", style="yellow")
-            pv_table.add_column("Title", style="cyan")
-            pv_table.add_column("Details", style="white")
-            
-            for pv_match in metadata['princevault']['matches']:
-                song = pv_match.song
-                details = []
-                
-                if song.performer and song.performer.lower() != 'prince':
-                    details.append(f"by {song.performer}")
-                
-                if song.recording_date:
-                    details.append(f"recorded {song.recording_date}")
-                
-                if song.album_appearances:
-                    details.append(f"from {song.album_appearances[0]}")
-                
-                details_str = ", ".join(details) if details else "Prince recording"
-                
-                pv_table.add_row(
-                    f"{pv_match.confidence:.2f}",
-                    song.title,
-                    details_str
-                )
-            
-            console.print(pv_table)
-            
-            # Show detailed info for best match
-            best_match = metadata['princevault']['matches'][0]
-            if best_match.confidence >= 0.70:
-                console.print()
-                console.print(f"[bold cyan]Best PrinceVault Match: {best_match.song.title}[/bold cyan]")
-                
-                song = best_match.song
-                pv_metadata = pv_service.parse_comprehensive_metadata(song)
-                
-                # Show comprehensive PrinceVault table
-                pv_table = Table(title="PrinceVault Details", box=box.ROUNDED)
-                pv_table.add_column("Property", style="cyan")
-                pv_table.add_column("Value", style="white")
-                
-                # Show database IDs and raw info
-                pv_table.add_row("Database ID", str(song.id))
-                pv_table.add_row("Page ID", str(song.page_id))
-                pv_table.add_row("Revision ID", str(song.revision_id))
-                pv_table.add_row("Last Updated", song.timestamp or "Unknown")
-                pv_table.add_row("Contributor", song.contributor or "Unknown")
-                
-                # Core metadata - show raw values
-                if song.performer:
-                    pv_table.add_row("Performer", song.performer)
-                if song.recording_date:
-                    pv_table.add_row("Recording Date", song.recording_date)
-                if song.written_by:
-                    pv_table.add_row("Written By", song.written_by)
-                if song.produced_by:
-                    pv_table.add_row("Produced By", song.produced_by)
-                if song.session_info:
-                    pv_table.add_row("Session", song.session_info)
-                if song.personnel:
-                    pv_table.add_row("Personnel", "; ".join(song.personnel))
-                if song.album_appearances:
-                    pv_table.add_row("Album Appearances", "; ".join(song.album_appearances))
-                if song.related_versions:
-                    pv_table.add_row("Related Versions", "; ".join(song.related_versions))
-                
-                # Additional parsed metadata - show all available
-                for key, value in pv_metadata.items():
-                    if value and key not in ['categories']:  # Handle categories separately
-                        if isinstance(value, list):
-                            pv_table.add_row(key.title(), "; ".join(str(v) for v in value))
-                        else:
-                            pv_table.add_row(key.title(), str(value))
-                
-                console.print(pv_table)
-                
-                # Show categories separately
-                categories = pv_metadata.get('categories')
-                if categories:
-                    console.print(f"[dim]Categories: {', '.join(categories)}[/dim]")
-        
-        elif lookup_pv and not metadata['princevault']['matches']:
-            console.print()
-            console.print("[dim]No PrinceVault matches found[/dim]")
+        if lookup_pv:
+            _display_princevault_matches(metadata['princevault']['matches'])
     
     else:
         console.print("\n[yellow]No AcoustID matches found for this file.[/yellow]")
         
         # Show PrinceVault matches even without AcoustID matches
-        if lookup_pv and metadata['princevault']['matches']:
-            console.print()
-            console.print("[bold]PrinceVault Filename Matches:[/bold]")
-            
-            pv_table = Table(title="PrinceVault Filename Matches", box=box.ROUNDED)
-            pv_table.add_column("Confidence", style="yellow")
-            pv_table.add_column("Title", style="cyan")
-            pv_table.add_column("Details", style="white")
-            
-            for pv_match in metadata['princevault']['matches']:
-                song = pv_match.song
-                details = pv_service.format_song_summary(song).replace(f"'{song.title}' ", "")
-                
-                pv_table.add_row(
-                    f"{pv_match.confidence:.2f}",
-                    song.title,
-                    details
-                )
-            
-            console.print(pv_table)
-        elif lookup_pv:
-            console.print()
-            console.print("[dim]No PrinceVault matches found for filename[/dim]")
+        if lookup_pv:
+            _display_princevault_matches(metadata['princevault']['matches'])
 
 
 @app.command()
@@ -630,27 +495,12 @@ def normalize(
 ) -> None:
     """Normalize metadata using LLM with comprehensive data from all sources."""
     
-    path = Path(file_path)
-    
-    if not path.exists():
-        console.print(f"[red]Error:[/red] File not found: {file_path}")
-        raise typer.Exit(1)
-    
-    if not AudioFile.is_supported(path):
-        console.print(f"[red]Error:[/red] Unsupported file format: {path.suffix}")
-        raise typer.Exit(1)
-    
+    path = _validate_audio_file(file_path)
     console.print(f"[dim]Normalizing metadata for: {path}[/dim]")
     
-    # Load configuration
+    # Load configuration and check API key
     cfg = ConfigLoader.load(config)
-    
-    # Check for API key
-    if not cfg.api.acoustid_key:
-        console.print("[red]Error:[/red] No AcoustID API key found.")
-        console.print("Set your API key in the ACOUSTID_KEY environment variable.")
-        console.print("Get a free key at: https://acoustid.org/api-key")
-        raise typer.Exit(1)
+    _check_api_key(cfg)
     
     # Initialize services
     acoustid_service = AcoustIDService(cfg)
@@ -710,25 +560,23 @@ def normalize(
             console.print("No tags found")
         console.print()
         
-        # MusicBrainz section
+        # MusicBrainz section - show raw JSON for debug
         console.print("[bold cyan]🎵 MUSICBRAINZ DATA[/bold cyan]")
-        if metadata['musicbrainz']['recordings']:
-            recording = metadata['musicbrainz']['recordings'][0]  # Show first match
-            console.print(f"Title: {recording.title}")
-            console.print(f"Artist: {recording.artist_name}")
-            console.print(f"Date: {recording.date or 'N/A'}")
-            console.print(f"Length: {recording.length or 'N/A'}")
-            if recording.releases:
-                console.print(f"Releases: {len(recording.releases)} found")
-                console.print(f"Release Status: {recording.release_status or 'N/A'}")
-            if recording.disambiguation:
-                console.print(f"Disambiguation: {recording.disambiguation}")
+        if metadata['musicbrainz'].get('raw_recordings'):
+            import json
+            console.print("[dim]Raw JSON (as sent to LLM):[/dim]")
+            console.print(json.dumps(metadata['musicbrainz']['raw_recordings'][0], indent=2))
         else:
             console.print("No MusicBrainz matches found")
         console.print()
         
         # PrinceVault section  
         console.print("[bold cyan]👑 PRINCEVAULT DATA[/bold cyan]")
+        
+        # Show what search terms were used
+        search_terms = _get_search_terms(metadata['acoustid']['matches'], metadata['file_info']['filename'])
+        console.print(f"Search terms used: {', '.join(search_terms)}")
+        
         if metadata['princevault']['matches']:
             match = metadata['princevault']['matches'][0]  # Show best match
             song = match.song
@@ -740,11 +588,9 @@ def normalize(
             console.print(f"Produced By: {song.produced_by or 'N/A'}")
             console.print(f"Confidence: {match.confidence:.2f}")
             
-            # Show parsed categories
-            pv_metadata = pv_service.parse_comprehensive_metadata(song)
-            categories = pv_metadata.get('categories', [])
-            if categories:
-                console.print(f"Categories: {', '.join(categories)}")
+            # Show raw content length for debug
+            if song.content:
+                console.print(f"Raw Content Length: {len(song.content)} chars")
         else:
             console.print("No PrinceVault matches found")
         console.print()
@@ -760,50 +606,37 @@ def normalize(
     
     # Convert to format expected by current LLM service
     mb_data = None
-    if metadata['musicbrainz']['recordings']:
-        recording = metadata['musicbrainz']['recordings'][0]
-        mb_data = {
-            'id': recording.id,
-            'title': recording.title,
-            'artist_name': recording.artist_name,
-            'artist_id': recording.artist_id,
-            'date': recording.date,
-            'length': recording.length,
-            'disambiguation': recording.disambiguation,
-            'releases': recording.releases,
-            'release_status': recording.release_status,
-            'artist_credits': recording.artist_credits,
-            'recording_place': recording.recording_place,
-            'works': recording.works,
-            'tags': recording.tags,
-            'urls': recording.urls,
-            'related_recordings': recording.related_recordings,
-            'isrcs': recording.isrcs
-        }
+    if metadata['musicbrainz'].get('raw_recordings'):
+        # Use raw JSON data instead of parsed objects
+        mb_data = metadata['musicbrainz']['raw_recordings'][0]
     
     pv_data = None
     if metadata['princevault']['matches']:
         best_match = metadata['princevault']['matches'][0]
         song = best_match.song
-        pv_metadata = pv_service.parse_comprehensive_metadata(song)
-        pv_data = {
+        # Use raw song data instead of complex parsing
+        song_dict = {
+            'id': song.id,
             'title': song.title,
-            'performer': song.performer,
+            'content': song.content,
+            'page_id': song.page_id,
+            'revision_id': song.revision_id,
+            'timestamp': song.timestamp,
+            'contributor': song.contributor,
             'recording_date': song.recording_date,
-            'written_by': song.written_by,
-            'produced_by': song.produced_by,
             'session_info': song.session_info,
             'personnel': song.personnel,
             'album_appearances': song.album_appearances,
             'related_versions': song.related_versions,
-            'categories': pv_metadata.get('categories', []),
+            'performer': song.performer,
+            'written_by': song.written_by,
+            'produced_by': song.produced_by
+        }
+        pv_data = {
             'confidence': best_match.confidence,
+            'song': song_dict,  # JSON-serializable song data
             'raw_content': metadata['princevault']['raw_content']
         }
-        # Include all parsed metadata fields
-        for key, value in pv_metadata.items():
-            if key not in pv_data and value:
-                pv_data[key] = value
     
     # Format file info for LLM
     file_info = metadata['file_info']
@@ -900,6 +733,8 @@ def tag(
     console.print("[yellow]Tagging functionality coming in Phase 4![/yellow]")
     console.print(f"Would process: {file_path}")
     console.print(f"Mode: {'Tag-only' if tag_only else 'Copy+Place'}")
+    console.print(f"Config: {config or 'default'}")
+    console.print(f"Copy+Place: {copy_place}")
     if dry_run:
         console.print("[dim]Dry-run mode - no changes will be made[/dim]")
 
@@ -916,6 +751,11 @@ def batch(
     
     console.print("[yellow]Batch processing functionality coming in Phase 7![/yellow]")
     console.print(f"Would process directory: {directory}")
+    console.print(f"Mode: {'Tag-only' if tag_only else 'Copy+Place'}")
+    console.print(f"Config: {config or 'default'}")
+    console.print(f"Copy+Place: {copy_place}")
+    if dry_run:
+        console.print("[dim]Dry-run mode - no changes will be made[/dim]")
 
 
 @app.callback()
